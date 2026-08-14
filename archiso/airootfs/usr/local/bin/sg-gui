@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+# safegamingOS — SafeGuard GUI: менеджер комнат, антивирус, сеть, журнал.
+# Читает базу комнат напрямую (read-only), привилегированные операции
+# выполняет через pkexec (группа wheel — без пароля, см. polkit-правило
+# /etc/polkit-1/rules.d/49-safegamingos.rules).
+#
+# Usage: sg-gui   (или ярлык «SafeGuard» в меню приложений)
+
+import os
+import sqlite3
+import subprocess
+import sys
+
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
+    QTableWidget, QTableWidgetItem, QPushButton, QLabel, QDialog,
+    QFormLayout, QLineEdit, QComboBox, QCheckBox, QMessageBox, QFileDialog,
+    QHeaderView, QPlainTextEdit,
+)
+
+DB = "/var/lib/sg-rooms/sg.db"
+EVENTS_LOG = "/var/log/sg-rooms/events.log"
+
+BG = "#070b12"
+PANEL = "#0d1522"
+LINE = "#1c2b45"
+TEXT = "#dbe6f5"
+MUTED = "#7d8fae"
+GREEN = "#4ade80"
+CYAN = "#22d3ee"
+RED = "#f87171"
+
+STYLE = f"""
+QWidget {{ background: {BG}; color: {TEXT}; font-size: 13px; }}
+QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; }}
+QTabBar::tab {{ background: {PANEL}; padding: 8px 18px; border: 1px solid {LINE};
+               border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; }}
+QTabBar::tab:selected {{ background: {BG}; color: {GREEN}; border-top: 2px solid {GREEN}; }}
+QTableWidget {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 8px;
+               gridline-color: {LINE}; selection-background-color: #12233a; }}
+QHeaderView::section {{ background: {PANEL}; color: {CYAN}; border: none;
+                       border-bottom: 1px solid {LINE}; padding: 6px; }}
+QPushButton {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 8px;
+              padding: 7px 14px; }}
+QPushButton:hover {{ border-color: {GREEN}; color: {GREEN}; }}
+QPushButton:disabled {{ color: {MUTED}; border-color: {LINE}; }}
+QPushButton.danger {{ color: {RED}; }}
+QPushButton.danger:hover {{ border-color: {RED}; }}
+QLineEdit, QComboBox, QPlainTextEdit, QTextEdit {{
+    background: {PANEL}; border: 1px solid {LINE}; border-radius: 6px; padding: 6px; }}
+QLabel.header {{ font-size: 15px; font-weight: 600; color: {GREEN}; }}
+QLabel.muted {{ color: {MUTED}; }}
+QCheckBox::indicator {{ width: 16px; height: 16px; }}
+"""
+
+
+def run(cmd, timeout=180):
+    """Run a command, return (ok, stdout)."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode == 0, p.stdout or p.stderr
+    except Exception as e:
+        return False, f"ошибка запуска: {e}"
+
+
+def pkexec(cmd):
+    """Privileged sg-* call via pkexec, keeping the real user for SUDO_USER."""
+    user = os.environ.get("USER", os.environ.get("LOGNAME", ""))
+    return ["pkexec", "env", f"SUDO_USER={user}"] + cmd
+
+
+def db_rooms():
+    try:
+        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=3)
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT id,name,type,status,mem,cpu,app,created FROM rooms ORDER BY created"
+        ).fetchall()
+        con.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+class RunDialog(QDialog):
+    def __init__(self, parent=None, preset=None):
+        super().__init__(parent)
+        self.setWindowTitle("Запустить приложение в комнате")
+        self.setMinimumWidth(460)
+        form = QFormLayout(self)
+        self.name = QLineEdit(preset or "")
+        self.name.setPlaceholderText("browser, games, work…")
+        self.app = QLineEdit()
+        self.app.setPlaceholderText("firefox / prismlauncher / obs / команда…")
+        self.type = QComboBox()
+        self.type.addItems(["browser", "games", "general", "streaming", "offline"])
+        self.mem = QLineEdit("4G")
+        self.mem.setPlaceholderText("4G, 8G, 0 = без лимита")
+        self.cpu = QLineEdit("200")
+        self.cpu.setPlaceholderText("200 = 2 ядра, 400 = 4 ядра, 0 = без лимита")
+        self.game = QCheckBox("игровой режим (экран/звук/ввод сессии)")
+        self.offline = QCheckBox("без сети (--offline)")
+        form.addRow("Имя комнаты:", self.name)
+        form.addRow("Приложение:", self.app)
+        form.addRow("Тип:", self.type)
+        form.addRow("Лимит RAM:", self.mem)
+        form.addRow("Лимит CPU:", self.cpu)
+        form.addRow("", self.game)
+        form.addRow("", self.offline)
+        btns = QHBoxLayout()
+        ok = QPushButton("Запустить")
+        cancel = QPushButton("Отмена")
+        ok.setStyleSheet(f"background:{GREEN};color:#06280f;font-weight:600;")
+        btns.addWidget(cancel)
+        btns.addStretch()
+        btns.addWidget(ok)
+        form.addRow(btns)
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+
+    def command(self):
+        cmd = pkexec(["sg-room-run", "--type", self.type.currentText(),
+                      "--mem", self.mem.text().strip() or "0",
+                      "--cpu", self.cpu.text().strip() or "0"])
+        if self.game.isChecked():
+            cmd.append("--game")
+        if self.offline.isChecked():
+            cmd.append("--offline")
+        cmd += [self.name.text().strip(), "--", self.app.text().strip()]
+        return cmd
+
+
+class RoomsTab(QWidget):
+    def __init__(self, parent):
+        super().__init__()
+        self.win = parent
+        lay = QVBoxLayout(self)
+        head = QHBoxLayout()
+        head.addWidget(QLabel("Комнаты изоляции"), 1)
+        self.hint = QLabel("")
+        self.hint.setObjectName("muted")
+        head.addWidget(self.hint)
+        lay.addLayout(head)
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(
+            ["Имя", "Тип", "Статус", "RAM", "CPU", "Приложение", "Создана"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.table, 1)
+        btns = QHBoxLayout()
+        for text, slot in [
+            ("⟳ Обновить", self.refresh),
+            ("▶ Запустить приложение", self.run_app),
+            ("🎮 Игровой режим вкл", lambda: self.game_mode(1)),
+            ("🎮 Игровой режим выкл", lambda: self.game_mode(0)),
+            ("🧪 Карантин", lambda: self.act("quarantine")),
+            ("♻ Восстановить", lambda: self.act("restore")),
+            ("🗑 Удалить", lambda: self.act("delete")),
+            ("📊 Мониторинг", self.win.av_live),
+        ]:
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            if "Удалить" in text or "Карантин" in text:
+                b.setProperty("danger", True)
+            btns.addWidget(b)
+        btns.addStretch()
+        lay.addLayout(btns)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(4000)
+
+    def selected_slug(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "SafeGuard", "Сначала выберите комнату в списке.")
+            return None
+        return self.table.item(row, 0).text()
+
+    def refresh(self):
+        rooms = db_rooms()
+        self.table.setRowCount(len(rooms))
+        for i, r in enumerate(rooms):
+            vals = [r["name"], r["type"], r["status"], r["mem"], r["cpu"], r["app"], ""]
+            for j, v in enumerate(vals):
+                self.table.setItem(i, j, QTableWidgetItem(str(v)))
+            st = self.table.item(i, 2)
+            if r["status"] == "quarantined":
+                st.setForeground(QColor(RED))
+            elif r["status"] == "running":
+                st.setForeground(QColor(GREEN))
+        n = len(rooms)
+        self.hint.setText(f"{n} комнат(ы)  ·  база: {DB}")
+
+    def run_app(self):
+        dlg = RunDialog(self)
+        if dlg.exec():
+            cmd = dlg.command()
+            name, app = dlg.name.text().strip(), dlg.app.text().strip()
+            if not name or not app:
+                QMessageBox.warning(self, "SafeGuard", "Заполните имя комнаты и приложение.")
+                return
+            # sg-room-run живёт, пока приложение открыто — запускаем detached
+            try:
+                subprocess.Popen(cmd, start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                QMessageBox.information(
+                    self, "SafeGuard",
+                    f"«{app}» запускается в комнате «{name}» с лимитами "
+                    f"RAM {dlg.mem.text()} / CPU {dlg.cpu.text()}%.\n"
+                    f"Отслеживать: sudo sg-av live")
+            except Exception as e:
+                QMessageBox.warning(self, "SafeGuard", f"не удалось запустить: {e}")
+            self.refresh()
+
+    def game_mode(self, on):
+        slug = self.selected_slug()
+        if slug:
+            ok, out = run(pkexec(["sg-game-mode", slug, "on" if on else "off"]))
+            self.msg(ok, out)
+            self.refresh()
+
+    def act(self, action):
+        slug = self.selected_slug()
+        if not slug:
+            return
+        what = {"quarantine": "поместить в карантин (остановить процессы, запечатать данные)",
+                "restore": "восстановить из карантина",
+                "delete": "УДАЛИТЬ БЕЗВОЗВРАТНО (все данные комнаты)"}[action]
+        if action == "delete":
+            ask = QMessageBox.question(
+                self, "SafeGuard",
+                f"Точно удалить комнату «{slug}»?\nДанные будут стёрты безвозвратно.")
+            if ask != QMessageBox.StandardButton.Yes:
+                return
+        ok, out = run(pkexec(["sg-av", action, slug]))
+        self.msg(ok, out)
+        self.refresh()
+
+    def msg(self, ok, out):
+        text = (out or "").strip()
+        if not text:
+            text = "готово" if ok else "не удалось"
+        if ok:
+            QMessageBox.information(self, "SafeGuard", text)
+        else:
+            QMessageBox.warning(self, "SafeGuard", text)
+
+
+class AvTab(QWidget):
+    def __init__(self, parent):
+        super().__init__()
+        self.win = parent
+        lay = QVBoxLayout(self)
+        btns = QHBoxLayout()
+        for text, slot in [
+            ("🛡 Сканировать файл", self.scan),
+            ("📊 Живой мониторинг", self.win.av_live),
+            ("📜 Журнал загрузок/блокировок", self.status),
+        ]:
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            btns.addWidget(b)
+        btns.addStretch()
+        lay.addLayout(btns)
+        self.out = QPlainTextEdit()
+        self.out.setReadOnly(True)
+        mono = QFont("monospace")
+        mono.setStyleHint(QFont.StyleHint.TypeWriter)
+        self.out.setFont(mono)
+        lay.addWidget(self.out, 1)
+
+    def scan(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Выбрать файл для сканирования")
+        if not path:
+            return
+        self.out.setPlainText(f"Сканирование {path}…\n(первый запуск может тянуть базу ClamAV)\n")
+        QApplication.processEvents()
+        ok, out = run(pkexec(["sg-av", "scan", path, "--yes"]), timeout=600)
+        self.out.setPlainText(out or ("✓ готово" if ok else "не удалось"))
+
+    def status(self):
+        ok, out = run(pkexec(["sg-av", "status"]))
+        self.out.setPlainText(out or ("✓ готово" if ok else "не удалось"))
+
+    def show_text(self, text):
+        self.out.setPlainText(text)
+
+
+class NetTab(QWidget):
+    def __init__(self, parent):
+        super().__init__()
+        self.win = parent
+        lay = QVBoxLayout(self)
+        row = QHBoxLayout()
+        self.url = QLineEdit()
+        self.url.setPlaceholderText("https://example.com/bad.exe")
+        b1 = QPushButton("🚫 Заблокировать")
+        b2 = QPushButton("✅ Разблокировать")
+        b1.clicked.connect(lambda: self.block(False))
+        b2.clicked.connect(lambda: self.block(True))
+        row.addWidget(self.url, 1)
+        row.addWidget(b1)
+        row.addWidget(b2)
+        lay.addLayout(row)
+        self.out = QPlainTextEdit()
+        self.out.setReadOnly(True)
+        mono = QFont("monospace")
+        mono.setStyleHint(QFont.StyleHint.TypeWriter)
+        self.out.setFont(mono)
+        lay.addWidget(self.out, 1)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(5000)
+        self.refresh()
+
+    def refresh(self):
+        ok, out = run(pkexec(["sg-av", "status"]))
+        if ok:
+            self.out.setPlainText(out)
+
+    def block(self, unblock):
+        url = self.url.text().strip()
+        if not url:
+            QMessageBox.information(self, "SafeGuard", "Введите URL.")
+            return
+        ok, out = run(pkexec(["sg-av", "unblock" if unblock else "block", url]))
+        QMessageBox.information(self, "SafeGuard", (out or "готово").strip())
+        self.url.clear()
+        self.refresh()
+
+
+class LogTab(QWidget):
+    def __init__(self, parent):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        self.out = QPlainTextEdit()
+        self.out.setReadOnly(True)
+        mono = QFont("monospace")
+        mono.setStyleHint(QFont.StyleHint.TypeWriter)
+        self.out.setFont(mono)
+        lay.addWidget(self.out, 1)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(3000)
+        self.refresh()
+
+    def refresh(self):
+        try:
+            with open(EVENTS_LOG, "r", encoding="utf-8", errors="replace") as f:
+                data = f.read()
+            self.out.setPlainText(data[-20000:])
+        except Exception:
+            self.out.setPlainText("(журнал ещё пуст — события появятся после первого запуска комнат)")
+
+
+class MainWin(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("SafeGuard — safegamingOS")
+        self.resize(980, 640)
+        tabs = QTabWidget()
+        self.rooms = RoomsTab(self)
+        self.av = AvTab(self)
+        self.net = NetTab(self)
+        self.log = LogTab(self)
+        tabs.addTab(self.rooms, "Комнаты")
+        tabs.addTab(self.av, "Антивирус")
+        tabs.addTab(self.net, "Сеть")
+        tabs.addTab(self.log, "Журнал")
+        self.setCentralWidget(tabs)
+        self.statusBar().showMessage(
+            "Привилегированные действия выполняются через pkexec (wheel — без пароля). "
+            "Логин live/live в live-системе тоже подходит.")
+
+    def av_live(self):
+        ok, out = run(pkexec(["sg-av", "live"]), timeout=30)
+        self.av.show_text(out or ("✓ готово" if ok else "не удалось"))
+        self.tab_live = None
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setStyleSheet(STYLE)
+    w = MainWin()
+    w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

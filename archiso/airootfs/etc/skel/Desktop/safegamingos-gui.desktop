@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SafeGuard
+Comment=Комнаты, антивирус, сеть, журнал
+Exec=/usr/local/bin/sg-gui
+Icon=security-high
+Terminal=false
+Categories=System;Security;

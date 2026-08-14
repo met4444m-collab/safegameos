@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Стрим (комната)
+Comment=OBS Studio в игровой комнате (8G RAM, 4 ядра)
+Exec=/usr/local/bin/sg-open streaming
+Icon=camera-video
+Terminal=false
+Categories=AudioVideo;AudioVideoEditing;

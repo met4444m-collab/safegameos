@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Игры (комната)
+Comment=PrismLauncher (Minecraft) в игровой комнате (8G RAM, 4 ядра)
+Exec=/usr/local/bin/sg-open games
+Icon=applications-games
+Terminal=false
+Categories=Game;

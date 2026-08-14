@@ -71,9 +71,18 @@ prismlauncher
 jre-openjdk
 firefox
 firejail
+# --- X11-изоляция комнат (sg-room-run --x11-isolate) ---
+xorg-server-xephyr
+xorg-xauth
 # --- SafeGuard (rooms, AV, tracking) ---
 sqlite
 inotify-tools
+python
+apparmor
+# --- SafeGuard GUI ---
+python-pyqt6
+polkit
+polkit-kde-agent
 # --- installer ---
 dialog
 # --- utilities ---

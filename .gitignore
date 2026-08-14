@@ -6,3 +6,5 @@ dist/
 *.iso
 *.sig
 tsconfig.tsbuildinfo
+__pycache__/
+*.pyc

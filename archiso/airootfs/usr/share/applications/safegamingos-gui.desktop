@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SafeGuard
+Name[en]=SafeGuard
+GenericName=Комнаты и защита
+Comment=Управление изолированными комнатами, антивирусом и блокировками
+Exec=sg-gui
+Icon=security-high
+Terminal=false
+Categories=System;Security;Settings;
+Keywords=room;security;firejail;antivirus;

@@ -9,6 +9,9 @@
 #       --yes = автоматически: заблокировать URL + карантин комнаты.
 #   sudo sg-av status [--room ROOM]
 #       Журнал загрузок (с источниками), заблокированные URL, карантин.
+#   sudo sg-av live
+#       Живой мониторинг: сколько RAM/CPU реально ест каждая комната
+#       (по cgroup-лимитам из sg-room-run --mem/--cpu).
 #   sudo sg-av block URL [virus]
 #   sudo sg-av unblock URL
 #   sudo sg-av quarantine ROOM [причина]
@@ -112,6 +115,41 @@ scan() {
 }
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+live() {
+  local units u
+  units="$(systemctl list-units --type=scope --no-legend --plain 2>/dev/null | awk '$1 ~ /^sg-/ {print $1}')"
+  if [[ -z "${units}" ]]; then
+    echo "Нет запущенных комнат. Запустите: sudo sg-room-run browser -- firefox"
+    exit 0
+  fi
+  printf '%-28s %-18s %-10s %-10s\n' "КОМНАТА" "RAM (тек/лимит)" "CPU-квота" "CPU, сек"
+  while IFS= read -r u; do
+    local mem_cur mem_max quota cpu_sec
+    mem_cur="$(systemctl show "${u}" -p MemoryCurrent --value 2>/dev/null)"
+    mem_max="$(systemctl show "${u}" -p MemoryMax --value 2>/dev/null)"
+    quota="$(systemctl show "${u}" -p CPUQuotaPerSecUSec --value 2>/dev/null)"
+    cpu_sec="$(systemctl show "${u}" -p CPUUsageNSec --value 2>/dev/null)"
+    [[ -n "${mem_cur}" && "${mem_cur}" != "18446744073709551615" ]] && mem_cur="$(numfmt --to=iec "${mem_cur}")" || mem_cur="0"
+    if [[ -n "${mem_max}" && "${mem_max}" != "18446744073709551615" ]]; then
+      mem_max="$(numfmt --to=iec "${mem_max}")"
+    else
+      mem_max="нет"
+    fi
+    if [[ -n "${quota}" && "${quota}" != "18446744073709551615" ]]; then
+      quota="$((quota / 10000))%"
+    else
+      quota="нет"
+    fi
+    [[ -n "${cpu_sec}" ]] && cpu_sec="$((cpu_sec / 1000000000))" || cpu_sec="0"
+    printf '%-28s %-18s %-10s %-10s\n' "${u%.scope}" "${mem_cur}/${mem_max}" "${quota}" "${cpu_sec}"
+  done <<< "${units}"
+  echo
+  echo "подсказка: sg-av live показывает только комнаты, запущенные через sg-room-run"
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
 status() {
   local room="${1:-}"
   sg_ensure_db 2>/dev/null || true
@@ -143,6 +181,7 @@ cmd="${1:-status}"
 shift || true
 case "${cmd}" in
   scan)       scan "$@" ;;
+  live)       live ;;
   status|list) status "${1:-}" ;;
   block)      sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-av block URL [virus]" >&2; exit 1; }
               sg_block_url "$1" "${2:-user}" ;;

@@ -1,0 +1,11 @@
+// safegamingOS: allow users in group "wheel" to run SafeGuard tools
+// (sg-room-run, sg-av, sg-game-mode, ...) via pkexec without a password.
+// This powers the SafeGuard GUI; the tools themselves stay root-only.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" && subject.isInGroup("wheel")) {
+        var program = action.lookup("program");
+        if (program && program.indexOf("/sg-") !== -1) {
+            return polkit.Result.YES;
+        }
+    }
+});

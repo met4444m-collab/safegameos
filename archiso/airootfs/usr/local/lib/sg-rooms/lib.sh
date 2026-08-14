@@ -19,6 +19,11 @@ sg_require() {
   done
 }
 
+# true, если установленный firejail поддерживает опцию (страховка от старых версий)
+fj_supports() {
+  firejail --help 2>/dev/null | grep -qE -- "--${1}([[:space:]=]|$)"
+}
+
 slugify() {
   echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\+/-/g; s/^-//; s/-$//'
 }
@@ -41,7 +46,9 @@ real_user() {
 
 sg_ensure_db() {
   mkdir -p "${SG_ROOT}" "${SG_QUARANTINE}" "${SG_LOG}" "${SG_LOCK}"
+  chmod 700 "${SG_ROOT}" "${SG_QUARANTINE}" "${SG_LOG}" "${SG_LOCK}"
   touch "${SG_DB}"
+  chmod 600 "${SG_DB}"
   sqlite3 "${SG_DB}" <<'SQL'
 CREATE TABLE IF NOT EXISTS rooms(
   id TEXT PRIMARY KEY,
@@ -106,6 +113,17 @@ sg_room_exists() {
 
 sg_room_status() {
   sqlite3 "${SG_DB}" "SELECT status FROM rooms WHERE id='$1';" 2>/dev/null
+}
+
+# стандартные комнаты «из коробки» (создаются при настройке, idempotent)
+sg_default_rooms() {
+  local now; now="$(sg_now)"
+  sqlite3 "${SG_DB}" <<SQL
+INSERT OR IGNORE INTO rooms(id,name,type,status,mem,cpu,app,created) VALUES
+ ('browser','browser','browser','ready','4G','200','firefox',${now}),
+ ('games','games','games','ready','8G','400','prismlauncher',${now}),
+ ('streaming','streaming','streaming','ready','8G','400','obs',${now});
+SQL
 }
 
 # ---------------------------------------------------------------------------

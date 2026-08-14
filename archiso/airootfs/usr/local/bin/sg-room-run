@@ -5,6 +5,9 @@
 #   sudo sg-room-run NAME -- APP [АРГУМЕНТЫ...]
 #   sudo sg-room-run --game NAME -- APP [АРГУМЕНТЫ...]     игровая комната
 #   sudo sg-room-run --offline NAME -- APP [АРГУМЕНТЫ...]  без сети
+#   sudo sg-room-run --x11-isolate NAME -- APP [АРГУМЕНТЫ...]  отдельный дисплей (Xephyr)
+#   --x11-isolate: приложение работает в собственном виртуальном дисплее и
+#   физически не видит экран/клавиатуру хоста (для X11-сессий; в Wayland не нужно)
 #   sudo sg-room-run --type TYPE --mem 4G --cpu 200 NAME -- APP
 #
 # Типы: browser, games, general, streaming, offline.
@@ -21,16 +24,20 @@ usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash'; }
 type="general"
 mem="4G"
 cpu="200"
+mem_set=0
+cpu_set=0
 game=0
 offline=0
+x11iso=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --type)   type="${2:?--type требует значение}"; shift 2 ;;
-    --mem)    mem="${2:?--mem требует значение}"; shift 2 ;;
-    --cpu)    cpu="${2:?--cpu требует значение}"; shift 2 ;;
+    --mem)    mem="${2:?--mem требует значение}"; mem_set=1; shift 2 ;;
+    --cpu)    cpu="${2:?--cpu требует значение}"; cpu_set=1; shift 2 ;;
     --game)   game=1; shift ;;
     --offline) offline=1; shift ;;
+    --x11-isolate) x11iso=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --)       shift; break ;;
     *)        break ;;
@@ -51,6 +58,16 @@ sg_ensure_db
 user="$(real_user)"
 [[ -n "${user}" && "${user}" != "root" ]] || { echo "error: не удалось определить пользователя" >&2; exit 1; }
 
+# --- лимиты ресурсов (по умолчанию игровые комнаты получают больше) ---
+if [[ ${game} -eq 1 ]]; then
+  [[ ${mem_set} -eq 0 ]] && mem="8G"
+  [[ ${cpu_set} -eq 0 ]] && cpu="400"
+fi
+[[ "${mem}" == "0" || -n "$(numfmt --from=iec "${mem}" 2>/dev/null)" ]] \
+  || { echo "error: неверный --mem: ${mem} (пример: 4G, 512M, 0 = без лимита)" >&2; exit 1; }
+[[ "${cpu}" =~ ^[0-9]+$ ]] \
+  || { echo "error: неверный --cpu: ${cpu} (пример: 200 = 2 ядра, 0 = без лимита)" >&2; exit 1; }
+
 # --- комната в базе ---
 if ! sg_room_exists "${slug}"; then
   [[ ${game} -eq 1 ]] && type="games"
@@ -58,18 +75,59 @@ if ! sg_room_exists "${slug}"; then
     "INSERT INTO rooms(id,name,type,status,mem,cpu,app,created)
      VALUES('$(sg_esc "${slug}")','$(sg_esc "${name}")','$(sg_esc "${type}")','running','$(sg_esc "${mem}")','$(sg_esc "${cpu}")','$(sg_esc "${app}")',$(sg_now));"
 else
-  sqlite3 "${SG_DB}" "UPDATE rooms SET app='$(sg_esc "${app}")' WHERE id='$(sg_esc "${slug}")';"
+  sqlite3 "${SG_DB}" "UPDATE rooms SET app='$(sg_esc "${app}")', mem='$(sg_esc "${mem}")', cpu='$(sg_esc "${cpu}")' WHERE id='$(sg_esc "${slug}")';"
 fi
 
 # --- домашний каталог комнаты (изолирован через --private) ---
 home="$(sg_room_home "${slug}")"
 mkdir -p "${home}/Downloads" "${home}/Documents" "${home}/.config"
 chown -R "${user}:${user}" "${home}" 2>/dev/null || true
+chmod 700 "${home}" 2>/dev/null || true
 
 # --- firejail: изоляция ---
 fj=(firejail --name="${slug}" --hostname="${slug}" --private="${home}"
-    --noroot --caps.drop=all --seccomp --protocol=unix,inet,inet6
+    --private-tmp --noroot --caps.drop=all --seccomp --protocol=unix,inet,inet6
     --shell=/bin/bash)
+
+# --- жёсткие опции (страховка от старых версий firejail) ---
+fj_supports ipc-namespace && fj+=(--ipc-namespace)
+fj_supports machine-id    && fj+=(--machine-id)
+
+# --- setuid-инструменты администрирования внутри комнаты = лестница наружу.
+#     Комнате они не нужны: админ-команды запускаются снаружи (pkexec/sudo). ---
+fj+=(--blacklist=/usr/bin/sudo --blacklist=/usr/bin/pkexec
+     --blacklist=/usr/bin/su --blacklist=/usr/bin/runuser)
+
+# --- общий /var/tmp = межкомнатный почтовый ящик для файлов ---
+fj+=(--blacklist=/var/tmp)
+
+# --- межкомнатная файловая изоляция: ни одна комната не видит чужие home/карантин ---
+while IFS= read -r other; do
+  [[ -n "${other}" ]] && fj+=(--blacklist="$(sg_room_home "${other}")")
+done < <(sqlite3 "${SG_DB}" "SELECT id FROM rooms WHERE id != '$(sg_esc "${slug}")';" 2>/dev/null)
+fj+=(--blacklist="${SG_QUARANTINE}")
+
+# --- D-Bus: не-игровые комнаты отрезаны и от сессионной, и от системной шины.
+#     Игровые (OBS/стрим) оставляем с доступом — им нужен. ---
+if [[ ${game} -eq 0 ]]; then
+  fj+=(--dbus-user=none)
+  fj_supports dbus-system && fj+=(--dbus-system=none)
+fi
+
+# --- X11-изоляция по запросу (только не-игровые): отдельный дисплей Xephyr.
+#     Приложение работает в собственном виртуальном экране и физически не может
+#     снимать экран хоста или перехватывать клавиатуру (нужно для X11-сессий;
+#     в Wayland-сессии изоляция обеспечивается самим дисплейным сервером). ---
+if [[ ${x11iso} -eq 1 ]]; then
+  if [[ ${game} -eq 1 ]]; then
+    echo "warning: --x11-isolate игнорируется для игровых комнат (нужен реальный дисплей)" >&2
+  elif ! command -v Xephyr >/dev/null 2>&1; then
+    echo "error: --x11-isolate требует пакет xorg-server-xephyr" >&2
+    exit 1
+  else
+    fj+=(--x11)
+  fi
+fi
 
 if [[ ${offline} -eq 1 ]]; then
   fj+=(--net=none)
@@ -82,6 +140,27 @@ if [[ ${game} -eq 1 ]]; then
 fi
 
 echo "==> запуск «${app}» в комнате «${slug}» (${home})"
+[[ "${mem}" != "0" ]] && echo "    лимит RAM:  ${mem}  (cgroup, без swap)"
+[[ "${cpu}" != "0" ]] && echo "    лимит CPU:  ${cpu}%  (cgroup)"
 echo "    закрыть комнату: firejail --shutdown=${slug}    (или sudo sg-quarantine ${slug})"
 echo
+
+# --- принудительные лимиты CPU/RAM через systemd-скоуп (cgroup v2) ---
+if command -v systemd-run >/dev/null 2>&1; then
+  unit="sg-${slug}"
+  systemctl list-units --type=scope --no-legend 2>/dev/null | grep -q " ${unit}\.scope" \
+    && unit="sg-${slug}-$RANDOM"
+  sd=(systemd-run --scope --unit="${unit}" --collect
+      -p OOMPolicy=kill -p TasksMax=256)
+  if [[ "${mem}" != "0" ]]; then
+    sd+=(-p "MemoryMax=$(numfmt --from=iec "${mem}")" -p MemorySwapMax=0)
+  fi
+  if [[ "${cpu}" != "0" ]]; then
+    sd+=(-p "CPUQuota=${cpu}%")
+  fi
+  exec "${sd[@]}" sudo -u "${user}" -- "${fj[@]}" "${app}" "$@"
+fi
+
+# --- fallback без systemd: rlimit внутри firejail ---
+[[ "${mem}" != "0" ]] && fj+=(--rlimit-as="$(numfmt --from=iec "${mem}")")
 exec sudo -u "${user}" -- "${fj[@]}" "${app}" "$@"

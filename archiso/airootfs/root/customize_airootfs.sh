@@ -44,6 +44,13 @@ if [[ -f /usr/local/lib/sg-rooms/lib.sh ]]; then
   # shellcheck source=/dev/null
   source /usr/local/lib/sg-rooms/lib.sh
   sg_ensure_db || true
+  sg_default_rooms || true
+fi
+
+# --- AppArmor: enforcement layer for rooms (live session) ---
+if systemctl list-unit-files apparmor.service >/dev/null 2>&1; then
+  systemctl enable apparmor >/dev/null 2>&1 || true
+  systemctl start apparmor >/dev/null 2>&1 || true
 fi
 
 echo ":: safegamingOS customize_airootfs: done"

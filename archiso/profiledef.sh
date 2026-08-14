@@ -28,5 +28,7 @@ file_permissions=(
   ["/usr/local/bin/sg-unblock-url"]="0:0:755"
   ["/usr/local/bin/sg-track"]="0:0:755"
   ["/usr/local/bin/sg-quarantine"]="0:0:755"
+  ["/usr/local/bin/sg-gui"]="0:0:755"
+  ["/usr/local/bin/sg-open"]="0:0:755"
   ["/usr/local/lib/sg-rooms"]="0:0:755"
 )

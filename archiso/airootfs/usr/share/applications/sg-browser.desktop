@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Браузер (комната)
+Comment=Firefox в изолированной комнате (4G RAM, 2 ядра)
+Exec=/usr/local/bin/sg-open browser
+Icon=web-browser
+Terminal=false
+Categories=Network;WebBrowser;

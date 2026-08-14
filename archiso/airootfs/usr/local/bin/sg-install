@@ -27,14 +27,25 @@ post_pass() {
   echo "==> Брендирование установленной системы..."
 
   mkdir -p "$target/usr/share/plymouth/themes" "$target/usr/share/wallpapers" \
-           "$target/usr/local/bin" "$target/usr/local/lib/sg-rooms"
+           "$target/usr/local/bin" "$target/usr/local/lib/sg-rooms" \
+           "$target/etc/polkit-1/rules.d" "$target/usr/share/applications"
   cp -r /usr/share/plymouth/themes/safegamingos "$target/usr/share/plymouth/themes/" 2>/dev/null || true
   cp /usr/share/wallpapers/safegamingos.png "$target/usr/share/wallpapers/" 2>/dev/null || true
   cp /usr/local/lib/sg-rooms/lib.sh "$target/usr/local/lib/sg-rooms/lib.sh" 2>/dev/null || true
   cp /usr/local/bin/sg-* "$target/usr/local/bin/" 2>/dev/null || true
+  cp /etc/polkit-1/rules.d/49-safegamingos.rules "$target/etc/polkit-1/rules.d/" 2>/dev/null || true
+  for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streaming.desktop; do
+    cp "/usr/share/applications/$f" "$target/usr/share/applications/" 2>/dev/null || true
+  done
+  # рабочий стол и обои «из коробки» для всех новых пользователей
+  mkdir -p "$target/etc/skel/Desktop" "$target/etc/skel/.config/autostart"
+  for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streaming.desktop; do
+    cp "/usr/share/applications/$f" "$target/etc/skel/Desktop/" 2>/dev/null || true
+  done
+  cp /etc/skel/.config/autostart/sg-wallpaper.desktop "$target/etc/skel/.config/autostart/" 2>/dev/null || true
   chmod +x "$target"/usr/local/bin/sg-* 2>/dev/null || true
 
-  arch-chroot "$target" /bin/bash -c '
+  arch-chroot "$target" env USERNAME="$USERNAME" /bin/bash -c '
     set -u
     # --- boot splash: theme + hook + rebuild initramfs ---
     if command -v plymouth-set-default-theme >/dev/null 2>&1; then
@@ -65,6 +76,7 @@ post_pass() {
       # shellcheck source=/dev/null
       source /usr/local/lib/sg-rooms/lib.sh
       sg_ensure_db 2>/dev/null || true
+      sg_default_rooms 2>/dev/null || true
     fi
     if systemctl list-unit-files apparmor.service >/dev/null 2>&1; then
       systemctl enable apparmor >/dev/null 2>&1 || true
@@ -82,6 +94,18 @@ post_pass() {
         wine wine-mono wine-gecko steam lutris gamemode lib32-gamemode \
         lib32-mesa lib32-vulkan-intel lib32-vulkan-radeon lib32-libpulse \
         >/dev/null 2>&1 || echo "  (multilib: wine/steam установлены позже: sudo pacman -S wine steam lutris)"
+    fi
+
+    # --- рабочий стол установленного пользователя: ярлыки комнат + обои ---
+    if [[ -n "${USERNAME:-}" && -d "/home/${USERNAME}" ]]; then
+      mkdir -p "/home/${USERNAME}/Desktop" "/home/${USERNAME}/.config/autostart"
+      for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streaming.desktop; do
+        cp "/usr/share/applications/${f}" "/home/${USERNAME}/Desktop/" 2>/dev/null || true
+      done
+      cp /etc/skel/.config/autostart/sg-wallpaper.desktop \
+        "/home/${USERNAME}/.config/autostart/" 2>/dev/null || true
+      chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/Desktop" \
+        "/home/${USERNAME}/.config" 2>/dev/null || true
     fi
   '
 
@@ -198,6 +222,7 @@ cat > "$TMPCFG" <<EOF
     "power-profiles-daemon", "firefox", "jre-openjdk",
     "obs-studio", "pipewire", "pipewire-pulse", "pipewire-audio", "wireplumber", "gst-plugin-pipewire",
     "firejail", "apparmor", "clamav", "sqlite", "inotify-tools", "acl",
+    "python", "python-pyqt6", "polkit", "polkit-kde-agent",
     "plymouth", "htop", "openssh", "git", "networkmanager",
     "intel-ucode", "amd-ucode"
   ],
