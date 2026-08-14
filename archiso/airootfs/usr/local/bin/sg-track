@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# safegamingOS — запомнить, откуда скачан файл (источник = URL).
+# SafeGuard использует это, чтобы при обнаружении вируса найти и заблокировать
+# ссылку, с которой он пришёл. Разблокировать можно вручную: sg-av unblock URL.
+#
+# Usage:
+#   sudo sg-track ФАЙЛ [--url URL] [--room ROOM] [--size N]
+#   sudo sg-track list [--room ROOM]
+#   sudo sg-track --watch КАТАЛОГ [--room ROOM]     следить за каталогом загрузок
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3
+[[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-track ..." >&2; exit 1; }
+
+usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash'; }
+
+record() {
+  local file="${1:-}" url="unknown" room="browser" size="0"
+  shift || true
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --url)  url="${2:-unknown}"; shift 2 ;;
+      --room) room="${2:-browser}"; shift 2 ;;
+      --size) size="${2:-0}"; shift 2 ;;
+      *)      echo "error: лишний аргумент: $1" >&2; exit 1 ;;
+    esac
+  done
+  [[ -n "${file}" ]] || { echo "usage: sg-track ФАЙЛ [--url URL] [--room ROOM]" >&2; exit 1; }
+  [[ -e "${file}" ]] || { echo "error: файл не найден: ${file}" >&2; exit 1; }
+
+  sg_ensure_db
+  sg_download_record "${file}" "${url}" "${room}" "${size}"
+  echo "✓ записано: $(basename "${file}") ← ${url} (комната: ${room})"
+}
+
+list() {
+  local room="${1:-}"
+  sg_ensure_db 2>/dev/null || true
+  if [[ -n "${room}" ]]; then
+    sqlite3 -separator ' | ' "${SG_DB}" \
+      "SELECT id,room,filename,source_url,status,datetime(time,'unixepoch') FROM downloads WHERE room='$(sg_esc "${room}")' ORDER BY id DESC LIMIT 100;" 2>/dev/null
+  else
+    sqlite3 -separator ' | ' "${SG_DB}" \
+      "SELECT id,room,filename,source_url,status,datetime(time,'unixepoch') FROM downloads ORDER BY id DESC LIMIT 100;" 2>/dev/null
+  fi
+  exit 0
+}
+
+watch() {
+  local dir="${1:-}" room="${2:-browser}"
+  [[ -d "${dir}" ]] || { echo "error: каталог не найден: ${dir}" >&2; exit 1; }
+  if ! command -v inotifywait >/dev/null 2>&1; then
+    echo "error: inotifywait не найден (sudo pacman -S inotify-tools)" >&2
+    exit 1
+  fi
+  echo "==> слежу за ${dir} (комната: ${room}). Новые файлы записываются в журнал SafeGuard."
+  echo "    остановить: Ctrl+C"
+  inotifywait -m -e close_write --format '%w%f' "${dir}" | while read -r f; do
+    [[ -f "${f}" ]] || continue
+    sg_ensure_db 2>/dev/null || true
+    sg_download_record "${f}" "unknown" "${room}"
+    echo "✓ новая загрузка: $(basename "${f}") (комната: ${room})"
+  done
+}
+
+cmd="${1:-}"
+shift || true
+case "${cmd}" in
+  list)    list "${1:-}" ;;
+  --watch) watch "${1:-}" "${2:-browser}" ;;
+  -h|--help) usage; exit 0 ;;
+  "")      usage >&2; exit 1 ;;
+  *)       record "${cmd}" "$@" ;;
+esac

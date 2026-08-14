@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# safegamingOS — SafeGuard: антивирус и защита комнат.
+#
+# Usage:
+#   sudo sg-av scan FILE [--room ROOM] [--url URL] [--yes]
+#       Сканировать файл (ClamAV). При обнаружении вируса:
+#       - блокирует источник (URL), если он известен;
+#       - предлагает: карантин комнаты / удалить комнату / оставить (решение пользователя).
+#       --yes = автоматически: заблокировать URL + карантин комнаты.
+#   sudo sg-av status [--room ROOM]
+#       Журнал загрузок (с источниками), заблокированные URL, карантин.
+#   sudo sg-av block URL [virus]
+#   sudo sg-av unblock URL
+#   sudo sg-av quarantine ROOM [причина]
+#   sudo sg-av restore ROOM
+#   sudo sg-av delete ROOM
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3
+
+usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash'; }
+
+# ---------------------------------------------------------------------------
+scan() {
+  local file="" room_arg="" url_arg="" yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --room) room_arg="${2:-}"; shift 2 ;;
+      --url)  url_arg="${2:-}"; shift 2 ;;
+      --yes)  yes=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *)      file="$1"; shift ;;
+    esac
+  done
+  [[ -n "${file}" ]] || { echo "usage: sg-av scan FILE [--room ROOM] [--url URL] [--yes]" >&2; exit 1; }
+
+  if ! command -v clamscan >/dev/null 2>&1; then
+    echo "!! ClamAV не установлен. Установите:" >&2
+    echo "   sudo pacman -S clamav && sudo freshclam" >&2
+    exit 2
+  fi
+  [[ -r "${file}" ]] || { echo "error: нет доступа к файлу: ${file}" >&2; exit 1; }
+
+  sg_ensure_db
+  local real_path row room url
+  real_path="$(readlink -f "${file}" 2>/dev/null || echo "${file}")"
+  row="$(sg_download_find "${real_path}")"
+  room="${room_arg}"
+  url="${url_arg}"
+  if [[ -n "${row}" ]]; then
+    local r u
+    r="${row%%|*}"; u="${row#*|}"
+    [[ -z "${room}" ]] && room="${r}"
+    [[ -z "${url}" ]] && url="${u%%|*}"
+  fi
+  [[ -n "${room}" ]] || room="unknown"
+  [[ -n "${url}" ]] || url="unknown"
+
+  echo "==> Сканирование: ${real_path}"
+  echo "    комната:  ${room}"
+  echo "    источник: ${url}"
+
+  local out virus
+  out="$(clamscan --no-summary "${real_path}" 2>&1)"
+  if echo "${out}" | grep -qi "FOUND"; then
+    virus="$(echo "${out}" | grep -i found | head -n1 | sed 's/.*: \([^:]*\) FOUND/\1/' | xargs)"
+    echo
+    echo "!!! ВИРУС ОБНАРУЖЕН: ${virus:-?}"
+    echo "    файл:     ${real_path}"
+    echo "    комната:  ${room}"
+    echo "    источник: ${url}"
+    sqlite3 "${SG_DB}" "UPDATE downloads SET status='infected' WHERE path='$(sg_esc "${real_path}")';"
+    sg_event "virus" "Вирус ${virus:-?} в ${real_path} (источник: ${url}, комната: ${room})."
+    echo
+
+    if [[ ${yes} -eq 1 ]]; then
+      [[ "${url}" != "unknown" ]] && sg_block_url "${url}" "${virus:-unknown}"
+      if [[ "${room}" != "unknown" ]]; then
+        echo "==> карантин комнаты «${room}»..."
+        sg_quarantine_room "${room}" "найден вирус ${virus:-?}"
+      fi
+      exit 0
+    fi
+
+    # 1) блокировка источника (решение пользователя)
+    if [[ "${url}" != "unknown" ]] && [[ -t 0 ]]; then
+      read -r -p "Заблокировать источник «${url}»? [Y/n] " a
+      [[ "${a}" =~ ^[Nn] ]] || sg_block_url "${url}" "${virus:-unknown}"
+    fi
+
+    # 2) карантин или удаление комнаты (решение пользователя)
+    if [[ "${room}" != "unknown" ]]; then
+      echo
+      echo "Комната «${room}» могла быть заражена. Ваш выбор:"
+      echo "  1) карантин — остановить процессы и запечатать данные комнаты"
+      echo "  2) удалить комнату полностью (все данные комнаты будут стёрты)"
+      echo "  3) оставить как есть"
+      read -r -p "Выбор [1/2/3] (по умолчанию 1): " a
+      case "${a}" in
+        2) sg_delete_room "${room}" ;;
+        3) echo "Оставлено как есть. Позже можно: sudo sg-av quarantine ${room}" ;;
+        *) sg_quarantine_room "${room}" "найден вирус ${virus:-?}" ;;
+      esac
+    fi
+    exit 0
+  fi
+
+  sqlite3 "${SG_DB}" "UPDATE downloads SET status='clean' WHERE path='$(sg_esc "${real_path}")';"
+  echo "✓ чисто: ${real_path}"
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
+status() {
+  local room="${1:-}"
+  sg_ensure_db 2>/dev/null || true
+  echo "== Загрузки (источники вирусов запоминаются здесь) =="
+  if [[ -n "${room}" ]]; then
+    sqlite3 -separator ' | ' "${SG_DB}" \
+      "SELECT id,room,filename,source_url,status,datetime(time,'unixepoch') FROM downloads WHERE room='$(sg_esc "${room}")' ORDER BY id DESC LIMIT 50;" 2>/dev/null
+  else
+    sqlite3 -separator ' | ' "${SG_DB}" \
+      "SELECT id,room,filename,source_url,status,datetime(time,'unixepoch') FROM downloads ORDER BY id DESC LIMIT 50;" 2>/dev/null
+  fi
+  [[ -z "$(sqlite3 "${SG_DB}" 'SELECT 1 FROM downloads LIMIT 1;' 2>/dev/null)" ]] && echo "(нет записей — фиксируйте загрузки: sg-track ФАЙЛ --url URL)"
+  echo
+  echo "== Заблокированные источники =="
+  local blocks
+  blocks="$(sqlite3 -separator ' | ' "${SG_DB}" \
+    "SELECT host,virus,datetime(time,'unixepoch'),CASE unblocked WHEN 1 THEN 'разблокирован' ELSE 'АКТИВЕН' END FROM blocked ORDER BY time DESC;" 2>/dev/null)"
+  [[ -n "${blocks}" ]] && printf '%s\n' "${blocks}" || echo "(нет блокировок)"
+  echo
+  echo "== Карантин =="
+  ls -1 "${SG_QUARANTINE}" 2>/dev/null || echo "(пусто)"
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
+[[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-av ..." >&2; exit 1; }
+
+cmd="${1:-status}"
+shift || true
+case "${cmd}" in
+  scan)       scan "$@" ;;
+  status|list) status "${1:-}" ;;
+  block)      sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-av block URL [virus]" >&2; exit 1; }
+              sg_block_url "$1" "${2:-user}" ;;
+  unblock)    sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-av unblock URL" >&2; exit 1; }
+              sg_unblock_url "$1" ;;
+  quarantine) sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-av quarantine ROOM [причина]" >&2; exit 1; }
+              sg_quarantine_room "$(slugify "$1")" "${2:-вручную}" ;;
+  restore)    sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-av restore ROOM" >&2; exit 1; }
+              sg_restore_room "$(slugify "$1")" ;;
+  delete)     sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-av delete ROOM" >&2; exit 1; }
+              sg_delete_room "$(slugify "$1")" ;;
+  -h|--help)  usage; exit 0 ;;
+  *)          echo "error: неизвестная команда: ${cmd}" >&2; usage >&2; exit 1 ;;
+esac

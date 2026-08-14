@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# safegamingOS — запустить приложение в изолированной комнате (firejail).
+#
+# Usage:
+#   sudo sg-room-run NAME -- APP [АРГУМЕНТЫ...]
+#   sudo sg-room-run --game NAME -- APP [АРГУМЕНТЫ...]     игровая комната
+#   sudo sg-room-run --offline NAME -- APP [АРГУМЕНТЫ...]  без сети
+#   sudo sg-room-run --type TYPE --mem 4G --cpu 200 NAME -- APP
+#
+# Типы: browser, games, general, streaming, offline.
+# Игровая комната получает разрешение на доступ к экрану/звуку/вводу сессии
+# (нужно для OBS, игр, стримов) — остальные комнаты таких прав не имеют.
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3 firejail
+[[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-room-run ..." >&2; exit 1; }
+
+usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash'; }
+
+type="general"
+mem="4G"
+cpu="200"
+game=0
+offline=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --type)   type="${2:?--type требует значение}"; shift 2 ;;
+    --mem)    mem="${2:?--mem требует значение}"; shift 2 ;;
+    --cpu)    cpu="${2:?--cpu требует значение}"; shift 2 ;;
+    --game)   game=1; shift ;;
+    --offline) offline=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --)       shift; break ;;
+    *)        break ;;
+  esac
+done
+
+[[ $# -ge 2 ]] || { usage >&2; exit 1; }
+name="$1"; shift
+[[ "${1:-}" == "--" ]] && shift
+app="${1:-}"
+[[ -n "${app}" ]] || { usage >&2; exit 1; }
+shift || true
+
+slug="$(slugify "${name}")"
+[[ -n "${slug}" ]] || { echo "error: пустое имя комнаты" >&2; exit 1; }
+
+sg_ensure_db
+user="$(real_user)"
+[[ -n "${user}" && "${user}" != "root" ]] || { echo "error: не удалось определить пользователя" >&2; exit 1; }
+
+# --- комната в базе ---
+if ! sg_room_exists "${slug}"; then
+  [[ ${game} -eq 1 ]] && type="games"
+  sqlite3 "${SG_DB}" \
+    "INSERT INTO rooms(id,name,type,status,mem,cpu,app,created)
+     VALUES('$(sg_esc "${slug}")','$(sg_esc "${name}")','$(sg_esc "${type}")','running','$(sg_esc "${mem}")','$(sg_esc "${cpu}")','$(sg_esc "${app}")',$(sg_now));"
+else
+  sqlite3 "${SG_DB}" "UPDATE rooms SET app='$(sg_esc "${app}")' WHERE id='$(sg_esc "${slug}")';"
+fi
+
+# --- домашний каталог комнаты (изолирован через --private) ---
+home="$(sg_room_home "${slug}")"
+mkdir -p "${home}/Downloads" "${home}/Documents" "${home}/.config"
+chown -R "${user}:${user}" "${home}" 2>/dev/null || true
+
+# --- firejail: изоляция ---
+fj=(firejail --name="${slug}" --hostname="${slug}" --private="${home}"
+    --noroot --caps.drop=all --seccomp --protocol=unix,inet,inet6
+    --shell=/bin/bash)
+
+if [[ ${offline} -eq 1 ]]; then
+  fj+=(--net=none)
+fi
+
+if [[ ${game} -eq 1 ]]; then
+  sg_permission_set "${slug}" game 1
+  sg_event "game" "Игровой режим включён для комнаты «${slug}»."
+  echo "==> игровая комната «${slug}»: доступ к экрану/звуку/вводу разрешён"
+fi
+
+echo "==> запуск «${app}» в комнате «${slug}» (${home})"
+echo "    закрыть комнату: firejail --shutdown=${slug}    (или sudo sg-quarantine ${slug})"
+echo
+exec sudo -u "${user}" -- "${fj[@]}" "${app}" "$@"

@@ -1,0 +1,66 @@
+/* safegamingOS — DVD-style boot splash.
+ * The "SAFEGAMINGOS" logo bounces off the screen edges and changes
+ * color on every bounce, like the classic DVD logo.
+ * Rendered from logo-0.png .. logo-7.png (8 color variants).
+ */
+
+Window.SetBackgroundTopColor(0.02, 0.04, 0.08);
+Window.SetBackgroundBottomColor(0.02, 0.04, 0.08);
+
+imgs[0] = Image("logo-0.png");
+imgs[1] = Image("logo-1.png");
+imgs[2] = Image("logo-2.png");
+imgs[3] = Image("logo-3.png");
+imgs[4] = Image("logo-4.png");
+imgs[5] = Image("logo-5.png");
+imgs[6] = Image("logo-6.png");
+imgs[7] = Image("logo-7.png");
+
+logo = Sprite(imgs[0]);
+
+x = 30;
+y = 30;
+vx = 3.0;
+vy = 2.0;
+idx = 0;
+scaled = 0;
+
+fun on_refresh() {
+    W = Window.GetWidth();
+    H = Window.GetHeight();
+    if (W <= 0 || H <= 0) { return; }
+
+    if (scaled == 0) {
+        scale = (W * 0.42) / imgs[0].GetWidth();
+        for (i = 0; i < 8; i++) {
+            imgs[i] = imgs[i].Scale(imgs[i].GetWidth() * scale, imgs[i].GetHeight() * scale);
+        }
+        logo.SetImage(imgs[0]);
+        scaled = 1;
+    }
+
+    w = logo.GetWidth();
+    h = logo.GetHeight();
+
+    x = x + vx;
+    y = y + vy;
+
+    if (x <= 0) { x = 0; vx = 0 - vx; idx = idx + 1; }
+    if (x + w >= W) { x = W - w; vx = 0 - vx; idx = idx + 1; }
+    if (y <= 0) { y = 0; vy = 0 - vy; idx = idx + 1; }
+    if (y + h >= H) { y = H - h; vy = 0 - vy; idx = idx + 1; }
+
+    if (idx > 7) { idx = 0; }
+
+    logo.SetImage(imgs[idx]);
+    logo.SetX(x);
+    logo.SetY(y);
+}
+
+Plymouth.SetRefreshRate(30);
+Plymouth.SetRefreshFunction(on_refresh);
+
+fun on_quit() {
+    logo.SetOpacity(0);
+}
+Plymouth.SetQuitFunction(on_quit);

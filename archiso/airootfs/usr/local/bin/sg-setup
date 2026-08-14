@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# safegamingOS — one-time SafeGuard setup (rooms DB, antivirus, enforcement).
+# Usage: sudo sg-setup
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3
+[[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-setup" >&2; exit 1; }
+
+sg_ensure_db
+
+# AppArmor — enforcement layer for room isolation (if installed)
+if systemctl list-unit-files apparmor.service >/dev/null 2>&1; then
+  systemctl enable apparmor >/dev/null 2>&1 || true
+  systemctl start apparmor >/dev/null 2>&1 || true
+fi
+
+# ClamAV — база сигнатур при первом запуске
+if command -v freshclam >/dev/null 2>&1; then
+  systemctl enable clamav-freshclam >/dev/null 2>&1 || true
+  systemctl start clamav-freshclam >/dev/null 2>&1 || true
+  freshclam >/dev/null 2>&1 || true
+fi
+
+echo
+echo "== safegamingOS SafeGuard =="
+echo "✓ база комнат:       ${SG_DB}"
+echo "✓ карантин:          ${SG_QUARANTINE}"
+echo "✓ журнал событий:    ${SG_LOG}/events.log"
+echo "✓ резервная копия:   /etc/hosts.sg-backup"
+if command -v clamscan >/dev/null 2>&1; then
+  echo "✓ антивирус:         ClamAV (clamscan)"
+else
+  echo "⚠ антивирус:         ClamAV не установлен — установите: sudo pacman -S clamav && sudo freshclam"
+fi
+if command -v firejail >/dev/null 2>&1; then
+  echo "✓ изоляция комнат:   firejail"
+else
+  echo "⚠ изоляция комнат:   firejail не установлен — установите: sudo pacman -S firejail"
+fi
+echo
+echo "Быстрый старт:"
+echo "  sudo sg-room-run --game myroom -- prismlauncher   # игровая комната (Minecraft)"
+echo "  sudo sg-room-run browser -- firefox               # обычная комната (браузер)"
+echo "  sudo sg-track ~/Downloads/файл --url https://...  # запомнить источник загрузки"
+echo "  sudo sg-av status                                 # журнал загрузок и блокировок"
+exit 0

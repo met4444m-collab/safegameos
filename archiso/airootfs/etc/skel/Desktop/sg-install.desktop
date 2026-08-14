@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Установить safegamingOS
+Comment=Установить safegamingOS на диск (стирает выбранный диск!)
+Exec=sudo sg-install
+Icon=drive-harddisk
+Terminal=true
+Categories=System;

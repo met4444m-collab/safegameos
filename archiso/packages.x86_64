@@ -1,0 +1,89 @@
+# safegamingOS live ISO packages
+# --- base / kernel ---
+base
+linux
+linux-firmware
+intel-ucode
+amd-ucode
+mkinitcpio
+mkinitcpio-archiso
+# --- boot / disk tools (installer) ---
+arch-install-scripts
+archinstall
+syslinux
+grub
+efibootmgr
+parted
+gptfdisk
+dosfstools
+e2fsprogs
+btrfs-progs
+xfsprogs
+ntfs-3g
+exfatprogs
+f2fs-tools
+mdadm
+# --- network ---
+networkmanager
+iwd
+wpa_supplicant
+wireless-regdb
+# --- boot splash ---
+plymouth
+# --- desktop (KDE Plasma 6) ---
+plasma-meta
+plasma-nm
+plasma-pa
+sddm
+sddm-kcm
+kscreen
+konsole
+dolphin
+kate
+gwenview
+spectacle
+xdg-utils
+xdg-user-dirs
+xdg-desktop-portal
+xdg-desktop-portal-kde
+power-profiles-daemon
+# --- fonts ---
+ttf-dejavu
+noto-fonts
+noto-fonts-cjk
+# --- sound / video ---
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+alsa-utils
+sof-firmware
+# --- GPU drivers (auto-detected: Intel + AMD) ---
+mesa
+libva-intel-driver
+intel-media-driver
+vulkan-intel
+vulkan-radeon
+libva-utils
+# --- games / streaming ---
+obs-studio
+prismlauncher
+jre-openjdk
+firefox
+firejail
+# --- SafeGuard (rooms, AV, tracking) ---
+sqlite
+inotify-tools
+# --- installer ---
+dialog
+# --- utilities ---
+sudo
+vim
+man-db
+man-pages
+git
+curl
+wget
+reflector
+rsync
+openssh

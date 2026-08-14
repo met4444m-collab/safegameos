@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=safegamingOS wallpaper
+Comment=Apply the safegamingOS branded wallpaper
+Exec=plasma-apply-wallpaperimage /usr/share/wallpapers/safegamingos.png
+X-GNOME-Autostart-enabled=true
+OnlyShowIn=KDE;

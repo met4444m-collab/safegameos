@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>safegamingOS — статус проекта</title>
+<style>
+  :root {
+    --bg: #070b12;
+    --panel: #0d1522;
+    --panel-2: #111c2e;
+    --line: #1c2b45;
+    --text: #dbe6f5;
+    --muted: #7d8fae;
+    --accent: #4ade80;
+    --accent-2: #22d3ee;
+    --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(34, 211, 238, .10), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(74, 222, 128, .10), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.55;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 48px 24px 80px; }
+  header { text-align: center; margin-bottom: 44px; }
+  .logo {
+    display: inline-block;
+    font-weight: 800;
+    letter-spacing: .06em;
+    font-size: 34px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: 0 0 40px rgba(34, 211, 238, .35);
+  }
+  .tag { color: var(--muted); margin-top: 8px; font-size: 15px; }
+  .badge {
+    display: inline-block;
+    margin-top: 14px;
+    padding: 4px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--accent-2);
+    background: rgba(34, 211, 238, .06);
+  }
+  /* DVD-style boot animation preview */
+  .bootbox {
+    margin: 28px auto 0;
+    max-width: 620px;
+    height: 130px;
+    border: 1px dashed var(--line);
+    border-radius: 14px;
+    background: rgba(13, 21, 34, .7);
+    overflow: hidden;
+    position: relative;
+  }
+  .bootbox canvas { width: 100%; height: 100%; display: block; }
+  .bootlabel {
+    position: absolute; top: 6px; left: 0; right: 0;
+    text-align: center; font-size: 11px; color: var(--muted); letter-spacing: .08em;
+  }
+  h2 {
+    font-size: 19px;
+    margin: 40px 0 14px;
+    color: var(--accent);
+    letter-spacing: .02em;
+  }
+  h2::before { content: "// "; color: var(--accent-2); }
+  p { color: var(--text); margin-bottom: 12px; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .card {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px;
+    transition: border-color .2s, transform .2s;
+  }
+  .card:hover { border-color: rgba(74, 222, 128, .5); transform: translateY(-2px); }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: var(--accent-2); }
+  .card p { font-size: 13.5px; color: var(--muted); margin: 0; }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #0a111f;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  code { padding: 2px 6px; font-size: 12.5px; color: var(--warn); }
+  pre {
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 13px;
+    color: #b9e6c8;
+    margin: 10px 0 16px;
+  }
+  pre .c { color: var(--muted); }
+  ul { padding-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 6px; color: var(--text); font-size: 14px; }
+  .status { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+  .dot.pending { background: var(--muted); box-shadow: none; }
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">SAFEGAMING<span style="color:var(--accent-2)">OS</span></div>
+    <div class="tag">Qubes-подобная изоляция «комнат» на Arch Linux — для игр и стримов, без тяжёлых VM</div>
+    <div class="badge">archiso build project · v0.9.0 · не веб-приложение</div>
+
+    <div class="bootbox">
+      <div class="bootlabel">превью загрузочной анимации (DVD-стиль)</div>
+      <canvas id="boot"></canvas>
+    </div>
+  </header>
+
+  <h2>Что это за проект</h2>
+  <p>
+    <b>safegamingOS</b> — кастомная ОС на базе Arch Linux, собираемая в загрузочный ISO через
+    <code>mkarchiso</code>. Вместо виртуальных машин (KVM/QEMU, которые «жрут» ОЗУ) приложения
+    запускаются в изолированных <b>комнатах</b>: лёгкая, но жёсткая изоляция на уровне ОС,
+    чтобы даже на слабом ПК хватало ресурсов для игр, OBS и стримов.
+  </p>
+
+  <h2>Возможности (дорожная карта)</h2>
+  <div class="grid">
+    <div class="card"><h3>Изоляция комнат без VM</h3><p>Комнаты на уровне ОС (namespace/cgroups-подходы, sandbox-профили), минимум потерь ОЗУ и CPU. Вирус из комнаты физически не выходит за её границы.</p></div>
+    <div class="card"><h3>Антивирус с источником загрузки</h3><p>Система запоминает, с какой ссылки скачан файл в браузере. При обнаружении вируса комната предлагает: удалить вирус или удалить комнату целиком — и блокирует источник. Пользователь может разблокировать ссылку вручную.</p></div>
+    <div class="card"><h3>Игровые комнаты</h3><p>У обычной комнаты нет доступа к чужому экрану, клавиатуре и звуку. В игровой комнате (например, для OBS) можно явно разрешить захват экрана, звука и ввода из других комнат.</p></div>
+    <div class="card"><h3>Windows-приложения</h3><p>Minecraft, Roblox, OBS Studio. В инсталляторе выбор: Wine или Proton (для игр). Swapfile до 16 ГБ для требовательных игр и ИИ.</p></div>
+    <div class="card"><h3>Рабочий стол</h3><p>KDE Plasma 6 с нестандартным, узнаваемым оформлением safegamingOS.</p></div>
+    <div class="card"><h3>Железо</h3><p>Автоподбор лучших драйверов (Intel GPU на ноутбуках): система сама проверяет и ставит подходящие.</p></div>
+  </div>
+
+  <h2>MVP (первая версия ISO)</h2>
+  <ul>
+    <li>✅ Загрузка со стилем «DVD-логотип» — plymouth-тема safegamingos (отскакивает от краёв экрана)</li>
+    <li>✅ Рабочий стол KDE Plasma после загрузки (live: пользователь <code>live</code>)</li>
+    <li>✅ Инсталлятор на диск — <code>sudo sg-install</code> (архитектура + swapfile 16 ГБ + брендирование)</li>
+    <li>⏳ Лёгкий антивирус SafeGuard — есть ядро (БД, карантин, блокировка URL), скрипты комнат — в разработке</li>
+  </ul>
+  <p class="muted">Дальше — из прототипа в продукт: комнаты, игровой режим, антивирусный сканер, блокировка источников загрузки.</p>
+
+  <h2>Статус репозитория</h2>
+  <div class="status"><span class="dot"></span> <code>archiso/</code> — полный профиль: packages, syslinux + systemd-boot (UEFI), airootfs, mkinitcpio</div>
+  <div class="status"><span class="dot"></span> Загрузочная анимация «DVD-логотип» — plymouth-тема <code>safegamingos</code> (отскакивает от краёв, меняет цвет)</div>
+  <div class="status"><span class="dot"></span> Live-окружение: автовход в KDE Plasma (пользователь <code>live</code>)</div>
+  <div class="status"><span class="dot"></span> Инсталлятор на диск: <code>sudo sg-install</code> (archinstall + swapfile 16 ГБ + брендирование)</div>
+  <div class="status"><span class="dot"></span> <code>sg-rooms/lib.sh</code> — ядро комнат/SafeGuard (БД, карантин, блокировка URL)</div>
+  <div class="status"><span class="dot pending"></span> Скрипты <code>sg-rooms</code>, <code>sg-room-run</code>, <code>sg-game-mode</code>, <code>sg-av</code>, <code>sg-track</code> — следующий этап</div>
+  <div class="status"><span class="dot pending"></span> Сборка ISO ещё не протестирована на реальном Arch Linux — тестовый прогон впереди</div>
+
+  <h2>Сборка ISO (у себя, на Arch Linux)</h2>
+  <pre><span class="c"># 1. установить archiso</span>
+sudo pacman -S archiso
+
+<span class="c"># 2. собрать (долго, нужен root)</span>
+sudo ./build_iso.sh
+
+<span class="c"># 3. записать на флешку / в VM</span>
+sudo dd bs=4M if=out/safegamingos-0.9.0-x86_64.iso of=/dev/sdX status=progress oflag=sync</pre>
+  <p class="muted">Сборка выполняется на вашей Arch-машине (или в Arch-контейнере) — не в браузере. Этот превью-экран просто показывает статус и документацию проекта.</p>
+</div>
+
+<footer>safegamingOS v0.9.0 · safegameos · build: archiso (mkarchiso)</footer>
+
+<script>
+  // DVD-style boot animation preview (bouncing logo)
+  const cv = document.getElementById("boot");
+  const ctx = cv.getContext("2d");
+  function size() {
+    const r = cv.getBoundingClientRect();
+    cv.width = r.width * devicePixelRatio;
+    cv.height = r.height * devicePixelRatio;
+  }
+  size();
+  addEventListener("resize", size);
+  const TEXT = "SAFEGAMINGOS";
+  let x = 40, y = 30, vx = 2.2, vy = 1.7;
+  let hue = 150;
+  function frame() {
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.font = `900 ${Math.min(W, H) * 0.2}px ui-sans-serif, system-ui, sans-serif`;
+    const w = ctx.measureText(TEXT).width, h = 30 * (Math.min(W, H) / 130);
+    x += vx; y += vy;
+    if (x <= 4 || x + w >= W - 4) { vx = -vx; hue = (hue + 60) % 360; }
+    if (y <= 4 || y + h >= H - 4) { vy = -vy; hue = (hue + 90) % 360; }
+    ctx.fillStyle = `hsl(${hue} 90% 60%)`;
+    ctx.shadowColor = `hsl(${hue} 90% 60%)`;
+    ctx.shadowBlur = 18;
+    ctx.fillText(TEXT, x, y + h);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

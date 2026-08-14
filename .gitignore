@@ -1,0 +1,8 @@
+node_modules/
+bun.lock
+work/
+out/
+dist/
+*.iso
+*.sig
+tsconfig.tsbuildinfo

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# safegamingOS — заблокировать URL/сайт системно (источник вируса).
+# Usage: sudo sg-block-url URL [вирус]
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3
+[[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-block-url URL" >&2; exit 1; }
+[[ $# -ge 1 ]] || { echo "usage: sg-block-url URL [вирус]" >&2; exit 1; }
+
+sg_ensure_db
+sg_block_url "$1" "${2:-user}"
+exit 0

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# safegamingOS — список комнат изоляции и их разрешений.
+# Usage: sg-rooms [list] | sg-rooms ROOM
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3
+
+sg_ensure_db 2>/dev/null || true
+
+list() {
+  local rows
+  rows="$(sqlite3 -separator ' | ' "${SG_DB}" \
+    "SELECT id,name,type,status,mem,cpu,app,datetime(created,'unixepoch') FROM rooms ORDER BY created;" 2>/dev/null)"
+  if [[ -z "${rows}" ]]; then
+    echo "Комнаты ещё не созданы. Пример:"
+    echo "  sudo sg-room-run browser -- firefox"
+    echo "  sudo sg-room-run --game games -- prismlauncher"
+    echo
+  else
+    printf '%s\n' "${rows}"
+    echo
+  fi
+  echo "--- разрешения комнат (game = доступ к экрану/звуку/вводу) ---"
+  local perms
+  perms="$(sqlite3 -separator ' | ' "${SG_DB}" \
+    "SELECT room, kind, CASE granted WHEN 1 THEN 'on' ELSE 'off' END, datetime(time,'unixepoch') FROM permissions ORDER BY room, kind;" 2>/dev/null)"
+  [[ -n "${perms}" ]] && printf '%s\n' "${perms}" || echo "(нет записей)"
+}
+
+room() {
+  local slug; slug="$(slugify "$1")"
+  local row
+  row="$(sqlite3 -separator ' | ' "${SG_DB}" \
+    "SELECT id,name,type,status,mem,cpu,app,created FROM rooms WHERE id='$(sg_esc "${slug}")';" 2>/dev/null)"
+  if [[ -z "${row}" ]]; then
+    echo "error: комната «${slug}» не найдена" >&2
+    exit 1
+  fi
+  echo "Комната: ${row}"
+  echo "--- загрузки в комнате ---"
+  sqlite3 -separator ' | ' "${SG_DB}" \
+    "SELECT id,filename,source_url,status,datetime(time,'unixepoch') FROM downloads WHERE room='$(sg_esc "${slug}")' ORDER BY id DESC LIMIT 20;" 2>/dev/null \
+    || echo "(нет записей)"
+}
+
+case "${1:-list}" in
+  list|status) list ;;
+  -h|--help)   grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash' ;;
+  *)           room "$1" ;;
+esac
+exit 0

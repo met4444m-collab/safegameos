@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=safegamingOS
+Description=safegamingOS DVD-style bouncing logo
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/safegamingos
+ScriptFile=/usr/share/plymouth/themes/safegamingos/safegamingos.script

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# safegamingOS — включить/выключить игровой режим комнаты.
+# Игровой режим = разрешение на доступ к экрану, звуку и вводу сессии
+# (для OBS, стримов и игр). Обычные комнаты таких прав не имеют.
+#
+# Usage:
+#   sudo sg-game-mode ROOM on|off
+#   sudo sg-game-mode ROOM            # показать текущее состояние
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3
+
+room="${1:-}"
+action="${2:-}"
+[[ -n "${room}" ]] || { echo "usage: sg-game-mode ROOM on|off" >&2; exit 1; }
+
+sg_ensure_db
+slug="$(slugify "${room}")"
+sg_room_exists "${slug}" || { echo "error: комната «${slug}» не найдена (см. sg-rooms)" >&2; exit 1; }
+
+case "${action}" in
+  on)
+    [[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-game-mode ${room} on" >&2; exit 1; }
+    sg_permission_set "${slug}" game 1
+    sg_event "game" "Игровой режим включён для комнаты «${slug}»."
+    echo "✓ игровой режим ВКЛЮЧЁН для «${slug}» — экран/звук/ввод разрешены."
+    ;;
+  off)
+    [[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-game-mode ${room} off" >&2; exit 1; }
+    sg_permission_set "${slug}" game 0
+    sg_event "game" "Игровой режим выключен для комнаты «${slug}»."
+    echo "✓ игровой режим выключен для «${slug}»."
+    ;;
+  "")
+    g="$(sg_permission_get "${slug}" game)"
+    [[ "${g}" == "1" ]] && echo "on" || echo "off"
+    ;;
+  *)
+    echo "usage: sg-game-mode ROOM on|off" >&2
+    exit 1
+    ;;
+esac
+exit 0

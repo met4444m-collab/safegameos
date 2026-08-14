@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# safegamingOS — карантин / восстановление / удаление комнаты.
+# Карантин останавливает процессы комнаты и запечатывает её данные.
+#
+# Usage:
+#   sudo sg-quarantine ROOM [причина]
+#   sudo sg-quarantine restore ROOM      вернуть из карантина
+#   sudo sg-quarantine delete ROOM       удалить комнату безвозвратно
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3
+[[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-quarantine ..." >&2; exit 1; }
+
+usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash'; }
+
+action="${1:-}"
+[[ -n "${action}" ]] || { usage >&2; exit 1; }
+
+case "${action}" in
+  restore)
+    room="${2:-}"
+    [[ -n "${room}" ]] || { usage >&2; exit 1; }
+    sg_ensure_db
+    sg_restore_room "$(slugify "${room}")"
+    ;;
+  delete)
+    room="${2:-}"
+    [[ -n "${room}" ]] || { usage >&2; exit 1; }
+    sg_ensure_db
+    sg_delete_room "$(slugify "${room}")"
+    ;;
+  -h|--help)
+    usage
+    ;;
+  *)
+    shift
+    reason="${*:-вручную}"
+    sg_ensure_db
+    sg_quarantine_room "$(slugify "${action}")" "${reason}"
+    ;;
+esac
+exit 0

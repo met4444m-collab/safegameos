@@ -1,0 +1,37 @@
+name: Build ISO
+
+# Builds out/safegamingos-<ver>-x86_64.iso on GitHub's cloud runners
+# inside an official Arch Linux container. Run it manually from the
+# Actions tab (or push a tag v*).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install archiso
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed archiso
+
+      - name: Build ISO
+        run: bash ./build_iso.sh
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: safegamingos-iso
+          path: out/*.iso
+          if-no-files-found: error
+          retention-days: 30
