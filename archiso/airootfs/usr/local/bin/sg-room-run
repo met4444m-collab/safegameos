@@ -84,6 +84,9 @@ mkdir -p "${home}/Downloads" "${home}/Documents" "${home}/.config"
 chown -R "${user}:${user}" "${home}" 2>/dev/null || true
 chmod 700 "${home}" 2>/dev/null || true
 
+# --- авто-снапшот «из коробки»: 1 в день, храним 5 (откат за секунды) ---
+sg_snapshot_auto "${slug}" >/dev/null 2>&1 || true
+
 # --- firejail: изоляция ---
 fj=(firejail --name="${slug}" --hostname="${slug}" --private="${home}"
     --private-tmp --noroot --caps.drop=all --seccomp --protocol=unix,inet,inet6
@@ -98,8 +101,21 @@ fj_supports machine-id    && fj+=(--machine-id)
 fj+=(--blacklist=/usr/bin/sudo --blacklist=/usr/bin/pkexec
      --blacklist=/usr/bin/su --blacklist=/usr/bin/runuser)
 
+# --- отладчики/трассировщики: ptrace-шпионаж за чужими процессами
+#     (страховка к yama ptrace_scope=1; отладка ведётся снаружи комнаты). ---
+fj+=(--blacklist=/usr/bin/strace --blacklist=/usr/bin/ltrace
+     --blacklist=/usr/bin/gdb --blacklist=/usr/bin/gdbserver)
+
+# --- сам firejail внутри комнаты: нельзя запустить вложенный jail или
+#     --join в другую комнату (двойной jail = обход имени песочницы). ---
+fj+=(--blacklist=/usr/bin/firejail)
+
 # --- общий /var/tmp = межкомнатный почтовый ящик для файлов ---
 fj+=(--blacklist=/var/tmp)
+
+# --- весь SG_ROOT (другие комнаты, карантин, снапшоты, база) и журнал:
+#     root-only; чёрный список — страховка к chmod 700/0600 ---
+fj+=(--blacklist="${SG_ROOT}" --blacklist="${SG_LOG}")
 
 # --- межкомнатная файловая изоляция: ни одна комната не видит чужие home/карантин ---
 while IFS= read -r other; do

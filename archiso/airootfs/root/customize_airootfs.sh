@@ -12,6 +12,19 @@ echo 'KEYMAP=us' > /etc/vconsole.conf
 echo 'safegamingos-live' > /etc/hostname
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 
+# --- branding: os-release (live medium). /etc/os-release is a symlink to
+#     /usr/lib/os-release on Arch — write the real file there. ---
+cat > /usr/lib/os-release <<'EOF'
+NAME="safegamingOS"
+PRETTY_NAME="safegamingOS 0.9.1"
+ID=safegamingos
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;45;212;167"
+HOME_URL="https://github.com/met4444m-collab/safegamingos"
+LOGO=safegamingos
+EOF
+
 echo ":: safegamingOS customize_airootfs: live user"
 
 # --- live desktop user (password 'live', full sudo without prompt) ---
@@ -22,10 +35,22 @@ echo 'live:live' | chpasswd
 echo 'live ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/10-live
 chmod 440 /etc/sudoers.d/10-live
 
+# --- branding: make sure the skel theme/installer autostart lands in the
+#     live user's home, and new scripts are executable ---
+chmod +x /usr/local/bin/sg-live-installer /usr/local/bin/sg-live-theme 2>/dev/null || true
+# KDE trusts desktop icons only when they are executable (no "Allow launching" prompt)
+chmod +x /etc/skel/Desktop/*.desktop 2>/dev/null || true
+mkdir -p /home/live/.config/autostart
+cp -f /etc/skel/.config/autostart/sg-wallpaper.desktop /home/live/.config/autostart/ 2>/dev/null || true
+cp -f /etc/skel/.config/autostart/sg-installer.desktop /home/live/.config/autostart/ 2>/dev/null || true
+cp -f /etc/skel/Desktop/*.desktop /home/live/Desktop/ 2>/dev/null || true
+chmod +x /home/live/Desktop/*.desktop 2>/dev/null || true
+chown -R live:live /home/live/.config /home/live/Desktop 2>/dev/null || true
+
 echo ":: safegamingOS customize_airootfs: services"
 
 # --- services ---
-systemctl enable NetworkManager sddm >/dev/null 2>&1 || true
+systemctl enable NetworkManager sddm sg-watch >/dev/null 2>&1 || true
 systemctl set-default graphical.target >/dev/null 2>&1 || true
 
 echo ":: safegamingOS customize_airootfs: plymouth theme"

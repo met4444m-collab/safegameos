@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+# safegamingOS — графический инсталлятор (мастер, как в Windows 10).
+# Работает от обычного пользователя; установка выполняется через
+# pkexec sg-install-run (root-помощник) с логом /tmp/sg-install.log.
+import os
+import re
+import shlex
+import subprocess
+import sys
+
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (
+    QApplication, QCheckBox, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QStackedWidget,
+    QVBoxLayout, QWidget,
+)
+
+APP = "safegamingOS"
+CONF = "/tmp/sg-install.conf"
+LOG = "/tmp/sg-install.log"
+GREEN = "#2dd4a7"
+DARK = "#0b1220"
+PANEL = "#111a2e"
+ACCENT = "#0e7490"
+RED = "#f87171"
+TEXT = "#e2e8f0"
+MUTED = "#7c8aa5"
+
+STYLE = f"""
+QWidget {{ background: {DARK}; color: {TEXT}; font-size: 14px; }}
+QMainWindow {{ background: {DARK}; }}
+QLabel#title {{ font-size: 34px; font-weight: 800; color: {GREEN}; }}
+QLabel#sub {{ font-size: 15px; color: {MUTED}; }}
+QLabel#step {{ font-size: 12px; color: {MUTED}; letter-spacing: 2px; }}
+QLabel#h {{ font-size: 20px; font-weight: 700; }}
+QLabel#warn {{ color: {RED}; font-weight: 600; }}
+QPushButton {{
+  background: {PANEL}; border: 1px solid #1e2b45; border-radius: 8px;
+  padding: 9px 20px; font-weight: 600;
+}}
+QPushButton:hover {{ border-color: {GREEN}; }}
+QPushButton:disabled {{ color: #4a5570; border-color: #182238; }}
+QPushButton#primary {{ background: {GREEN}; color: #06280f; border: none; padding: 12px 28px; font-size: 15px; }}
+QPushButton#primary:hover {{ background: #4adeb8; }}
+QPushButton#danger {{ background: #7f1d1d; color: #fee2e2; border: none; padding: 12px 28px; font-size: 15px; }}
+QPushButton#danger:hover {{ background: #991b1b; }}
+QLineEdit, QSpinBox, QListWidget {{
+  background: {PANEL}; border: 1px solid #1e2b45; border-radius: 8px; padding: 9px; selection-background-color: {ACCENT};
+}}
+QLineEdit:focus, QSpinBox:focus, QListWidget:focus {{ border-color: {GREEN}; }}
+QListWidget::item {{ padding: 12px; border-bottom: 1px solid #16203a; }}
+QListWidget::item:selected {{ background: {ACCENT}; color: white; }}
+QCheckBox {{ spacing: 8px; }}
+QCheckBox::indicator {{ width: 18px; height: 18px; }}
+QPlainTextEdit {{ background: #060a14; border: 1px solid #1e2b45; border-radius: 8px; font-family: monospace; }}
+QProgressBar {{ background: {PANEL}; border: none; border-radius: 8px; height: 18px; text-align: center; color: {TEXT}; }}
+QProgressBar::chunk {{ background: {GREEN}; border-radius: 8px; }}
+"""
+
+
+def list_disks():
+    """Return list of real disks: {path, size, model}."""
+    out = subprocess.run(
+        ["lsblk", "-dno", "PATH,SIZE,MODEL", "-e", "7,11"],
+        capture_output=True, text=True).stdout
+    disks = []
+    for line in out.strip().splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2:
+            disks.append({
+                "path": parts[0],
+                "size": parts[1],
+                "model": parts[2] if len(parts) > 2 else "",
+            })
+    return disks
+
+
+class Page(QWidget):
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+
+
+class WelcomePage(Page):
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        lay.addStretch()
+        t = QLabel(APP)
+        t.setObjectName("title")
+        t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(t)
+        s = QLabel("Безопасная ОС для игр и стримов — изоляция приложений в комнатах")
+        s.setObjectName("sub")
+        s.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(s)
+        lay.addSpacing(28)
+        info = QLabel(
+            "Этот мастер установит safegamingOS на ваш диск.\n\n"
+            "После установки всё готово из коробки:\n"
+            "• Комнаты изоляции (браузер / игры / стрим) — по одному клику с рабочего стола\n"
+            "• SafeGuard — антивирус, лимиты CPU/RAM, карантин, блокировка вирусных ссылок\n"
+            "• Загрузочная DVD-анимация, 16 ГБ swapfile, всё брендировано\n\n"
+            "Требования: диск от 8 ГБ, интернет (скачиваются пакеты), ~15–30 минут времени.")
+        info.setObjectName("h")
+        info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(info)
+        lay.addStretch()
+
+
+class DiskPage(Page):
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        h = QLabel("Выберите диск для установки")
+        h.setObjectName("h")
+        lay.addWidget(h)
+        warn = QLabel("⚠️ ВНИМАНИЕ: весь выбранный диск будет ПОЛНОСТЬЮ стёрт и отформатирован!")
+        warn.setObjectName("warn")
+        lay.addWidget(warn)
+        self.list = QListWidget()
+        lay.addWidget(self.list, 1)
+        self.confirm = QCheckBox("Я понимаю: все данные на этом диске будут безвозвратно удалены")
+        lay.addWidget(self.confirm)
+        self.reload()
+        self.list.itemSelectionChanged.connect(lambda: self.win.next_btn.setEnabled(False))
+        self.confirm.toggled.connect(self._check)
+        self.list.itemDoubleClicked.connect(lambda _i: self.win.try_next())
+
+    def _check(self):
+        self.win.next_btn.setEnabled(self.confirm.isChecked() and self.list.currentItem() is not None)
+
+    def reload(self):
+        self.list.clear()
+        for d in list_disks():
+            label = f"{d['path']}   {d['size']}" + (f"   ({d['model']})" if d["model"] else "")
+            it = QListWidgetItem(label)
+            it.setData(Qt.ItemDataRole.UserRole, d["path"])
+            self.list.addItem(it)
+
+    def selected(self):
+        it = self.list.currentItem()
+        return it.data(Qt.ItemDataRole.UserRole) if it else None
+
+
+class AccountPage(Page):
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        h = QLabel("Создание учётной записи")
+        h.setObjectName("h")
+        lay.addWidget(h)
+
+        def row(label, widget):
+            r = QHBoxLayout()
+            l = QLabel(label)
+            l.setFixedWidth(180)
+            r.addWidget(l)
+            r.addWidget(widget, 1)
+            lay.addLayout(r)
+
+        self.host = QLineEdit("safegamingos")
+        row("Имя компьютера:", self.host)
+        self.user = QLineEdit()
+        self.user.setPlaceholderText("например: player")
+        row("Имя пользователя:", self.user)
+        self.pass1 = QLineEdit()
+        self.pass1.setEchoMode(QLineEdit.EchoMode.Password)
+        row("Пароль:", self.pass1)
+        self.pass2 = QLineEdit()
+        self.pass2.setEchoMode(QLineEdit.EchoMode.Password)
+        row("Повторите пароль:", self.pass2)
+        self.swap = QSpinBox()
+        self.swap.setRange(0, 64)
+        self.swap.setValue(16)
+        self.swap.setSuffix(" ГБ")
+        row("Файл подкачки:", self.swap)
+        self.wine = QCheckBox("Установить Windows-игры: Wine + Steam + Lutris (~2–3 ГБ, multilib)")
+        lay.addWidget(self.wine)
+        self.err = QLabel("")
+        self.err.setObjectName("warn")
+        lay.addWidget(self.err)
+        lay.addStretch()
+
+    def validate(self):
+        u = self.user.text().strip()
+        p1 = self.pass1.text()
+        p2 = self.pass2.text()
+        h = self.host.text().strip()
+        if not re.match(r"^[a-z_][a-z0-9_-]{2,31}$", u):
+            self.err.setText("Имя пользователя: 3–32 символа, латиница в нижнем регистре (a-z, 0-9, _, -)")
+            return False
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$", h):
+            self.err.setText("Имя компьютера: латиница, без пробелов")
+            return False
+        if len(p1) < 1 or p1 != p2:
+            self.err.setText("Пароль пустой или не совпадает")
+            return False
+        self.err.setText("")
+        return True
+
+
+class SummaryPage(Page):
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        h = QLabel("Проверьте параметры установки")
+        h.setObjectName("h")
+        lay.addWidget(h)
+        self.text = QLabel("")
+        self.text.setObjectName("sub")
+        lay.addWidget(self.text)
+        lay.addStretch()
+        self.go = QPushButton("Начать установку")
+        self.go.setObjectName("danger")
+        self.go.clicked.connect(win.start_install)
+        lay.addWidget(self.go)
+
+
+class ProgressPage(Page):
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        h = QLabel("Установка safegamingOS…")
+        h.setObjectName("h")
+        lay.addWidget(h)
+        note = QLabel("Не выключайте компьютер и не закрывайте это окно. Это займёт 15–30 минут.")
+        note.setObjectName("sub")
+        lay.addWidget(note)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        lay.addWidget(self.bar)
+        self.status = QLabel("Подготовка…")
+        self.status.setObjectName("sub")
+        lay.addWidget(self.status)
+        self.out = QPlainTextEdit()
+        self.out.setReadOnly(True)
+        self.out.setMaximumHeight(220)
+        lay.addWidget(self.out, 1)
+
+
+class DonePage(Page):
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        lay.addStretch()
+        t = QLabel("✅ Установка завершена!")
+        t.setObjectName("title")
+        t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(t)
+        s = QLabel(
+            "safegamingOS установлена на диск.\n\n"
+            "1. Выключите виртуалку (или ПК)\n"
+            "2. Отключите установочный ISO / выньте флешку\n"
+            "3. Включите снова — увидите DVD-логотип и рабочий стол\n\n"
+            "Войдите созданным пользователем — комнаты, SafeGuard и ярлыки уже на месте.")
+        s.setObjectName("sub")
+        s.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(s)
+        lay.addStretch()
+        btns = QHBoxLayout()
+        close = QPushButton("Закрыть")
+        close.clicked.connect(win.close)
+        reboot = QPushButton("Перезагрузить сейчас")
+        reboot.setObjectName("primary")
+        reboot.clicked.connect(win.reboot_now)
+        btns.addWidget(close)
+        btns.addStretch()
+        btns.addWidget(reboot)
+        lay.addLayout(btns)
+
+
+class ErrorPage(Page):
+    def __init__(self, win):
+        super().__init__(win)
+        lay = QVBoxLayout(self)
+        t = QLabel("❌ Установка прервалась")
+        t.setObjectName("title")
+        t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(t)
+        self.text = QLabel("")
+        self.text.setObjectName("warn")
+        self.text.setWordWrap(True)
+        lay.addWidget(self.text)
+        self.out = QPlainTextEdit()
+        self.out.setReadOnly(True)
+        lay.addWidget(self.out, 1)
+        retry = QPushButton("Начать заново")
+        retry.clicked.connect(win.restart_wizard)
+        lay.addWidget(retry)
+
+
+class MainWin(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"Установка {APP}")
+        self.resize(820, 640)
+
+        root = QWidget()
+        outer = QVBoxLayout(root)
+        header = QHBoxLayout()
+        brand = QLabel(APP)
+        brand.setObjectName("title")
+        brand.setStyleSheet(f"font-size: 20px; color: {GREEN};")
+        header.addWidget(brand)
+        header.addStretch()
+        self.step_label = QLabel("")
+        self.step_label.setObjectName("step")
+        header.addWidget(self.step_label)
+        outer.addLayout(header)
+
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack, 1)
+
+        nav = QHBoxLayout()
+        self.back_btn = QPushButton("← Назад")
+        self.back_btn.clicked.connect(self.go_back)
+        nav.addWidget(self.back_btn)
+        nav.addStretch()
+        self.next_btn = QPushButton("Далее →")
+        self.next_btn.setObjectName("primary")
+        self.next_btn.clicked.connect(self.try_next)
+        nav.addWidget(self.next_btn)
+        outer.addLayout(nav)
+
+        self.setCentralWidget(root)
+
+        self.pages = [
+            WelcomePage(self), DiskPage(self),
+            AccountPage(self), SummaryPage(self),
+            ProgressPage(self), DonePage(self), ErrorPage(self),
+        ]
+        for p in self.pages:
+            self.stack.addWidget(p)
+        self.idx = 0
+        self.proc = None
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.poll)
+        self.show_page(0)
+
+    # ---------------------------------------------------------------
+    def show_page(self, i):
+        self.idx = i
+        self.stack.setCurrentIndex(i)
+        self.back_btn.setEnabled(i not in (0, 4, 5, 6))
+        nxt = i < 3
+        self.next_btn.setVisible(nxt)
+        if i == 1:
+            self.next_btn.setEnabled(False)
+            self.pages[1].confirm.setChecked(False)
+            self.pages[1]._check()
+        if i == 2:
+            self.next_btn.setEnabled(True)
+        if i == 3:
+            self.next_btn.setVisible(False)
+        steps = ["Добро пожаловать", "Выбор диска", "Учётная запись", "Проверка", "Установка"]
+        self.step_label.setText(f"ШАГ {i + 1} ИЗ 5 — {steps[i].upper()}" if i < 5 else "")
+
+    def try_next(self):
+        if self.idx == 1:
+            if self.pages[1].selected() is None:
+                QMessageBox.information(self, APP, "Выберите диск из списка.")
+                return
+            if not self.pages[1].confirm.isChecked():
+                QMessageBox.warning(self, APP, "Подтвердите, что диск будет стёрт.")
+                return
+        if self.idx == 2:
+            if not self.pages[2].validate():
+                return
+        self.go_next()
+
+    def go_next(self):
+        if self.idx == 2:
+            disk = self.pages[1].selected()
+            a = self.pages[2]
+            s = self.pages[3]
+            s.text.setText(
+                f"Диск:              {disk}  (будет полностью стёрт)\n"
+                f"Компьютер:   {a.host.text().strip()}\n"
+                f"Пользователь:  {a.user.text().strip()}\n"
+                f"Подкачка:      {a.swap.value()} ГБ\n"
+                f"Windows-игры: {'да (Wine + Steam + Lutris)' if a.wine.isChecked() else 'нет'}")
+            self.show_page(3)
+        else:
+            self.show_page(self.idx + 1)
+
+    def go_back(self):
+        self.show_page(max(0, self.idx - 1))
+
+    def restart_wizard(self):
+        self.pages[1].reload()
+        self.show_page(0)
+
+    def reboot_now(self):
+        """Перезагрузить из live-системы (pkexec sg-reboot — wheel без пароля)."""
+        try:
+            subprocess.Popen(["pkexec", "/usr/local/bin/sg-reboot"], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            QMessageBox.warning(self, APP, "Не удалось перезагрузить автоматически — перезагрузите вручную.")
+
+    # ---------------------------------------------------------------
+    def start_install(self):
+        a = self.pages[2]
+        disk = self.pages[1].selected()
+        # shell-quote every value: PASS is free-form and must survive `source`
+        # in sg-install-run unchanged (quotes, $, ;, etc.)
+        q = shlex.quote
+        cfg = (
+            f"DISK={q(disk)}\n"
+            f"HOSTNAME={q(a.host.text().strip())}\n"
+            f"USERNAME={q(a.user.text().strip())}\n"
+            f"PASS={q(a.pass1.text())}\n"
+            f"SWAP_GB={q(str(a.swap.value()))}\n"
+            f"WINE={q('1' if a.wine.isChecked() else '0')}\n"
+        )
+        try:
+            fd = os.open(CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(cfg)
+        except OSError as e:
+            QMessageBox.critical(self, APP, f"не удалось записать конфиг: {e}")
+            return
+        try:
+            self.proc = subprocess.Popen(
+                ["pkexec", "/usr/local/bin/sg-install-run", CONF],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            QMessageBox.critical(self, APP, f"не удалось запустить установку: {e}")
+            return
+        self.pages[4].out.clear()
+        self.pages[4].bar.setValue(0)
+        self.pages[4].status.setText("Запуск установщика…")
+        self.show_page(4)
+        self.offset = 0
+        self.timer.start(500)
+
+    def poll(self):
+        try:
+            with open(LOG, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(self.offset)
+                data = f.read()
+                self.offset = f.tell()
+                if self.offset < 0:
+                    self.offset = 0
+        except OSError:
+            return
+        if not data:
+            # file was truncated/recreated
+            try:
+                if os.path.getsize(LOG) < self.offset:
+                    self.offset = 0
+            except OSError:
+                return
+            return
+        out = self.pages[4].out
+        out.moveCursor(out.textCursor().MoveOperation.End)
+        for line in data.splitlines():
+            line = line.rstrip()
+            if not line:
+                continue
+            if line.startswith("PROGRESS:"):
+                try:
+                    _, rest = line.split("|", 1)
+                    pct = int(line.split("|", 1)[0].split(":", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                self.pages[4].bar.setValue(pct)
+                self.pages[4].status.setText(rest)
+            elif line.startswith("ERROR|"):
+                self.finish_error(line.split("|", 1)[1])
+                return
+            elif line.startswith("DONE|"):
+                self.timer.stop()
+                self.show_page(5)
+                return
+            else:
+                out.appendPlainText(line)
+        # process exited without DONE/ERROR?
+        if self.proc is not None and self.proc.poll() is not None and self.timer.isActive():
+            self.timer.stop()
+            if self.pages[4].bar.value() < 100:
+                empty = True
+                try:
+                    empty = os.path.getsize(LOG) == 0
+                except OSError:
+                    pass
+                if empty:
+                    self.finish_error(
+                        "Установщик не запустился (пустой лог).\n\n"
+                        "Обычно это polkit/pkexec: пользователь должен быть в группе wheel "
+                        "(в live-системе это live). Попробуйте запустить установку из "
+                        "терминала: sudo sg-install")
+                else:
+                    self.finish_error("установщик завершился неожиданно (см. лог ниже)")
+
+    def finish_error(self, msg):
+        self.timer.stop()
+        p = self.pages[6]
+        p.text.setText(msg)
+        try:
+            with open(LOG, "r", encoding="utf-8", errors="replace") as f:
+                p.out.setPlainText(f.read()[-20000:])
+        except OSError:
+            p.out.setPlainText("(лог недоступен)")
+        self.show_page(6)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setStyleSheet(STYLE)
+    w = MainWin()
+    w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

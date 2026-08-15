@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# safegamingOS — reboot the machine (root helper for the installer GUI).
+# Invoked via pkexec (group wheel — no password, see polkit rule).
+set -uo pipefail
+exec systemctl reboot

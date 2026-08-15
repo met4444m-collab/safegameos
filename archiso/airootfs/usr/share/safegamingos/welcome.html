@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>safegamingOS — Браузер (комната)</title>
+<style>
+  :root { --bg:#0b1220; --panel:#111a2e; --line:#1e2b45; --text:#e2e8f0;
+          --muted:#7c8aa5; --green:#2dd4a7; --cyan:#22d3ee; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:18px;
+          max-width:640px; width:100%; padding:44px 40px; box-shadow:0 20px 60px rgba(0,0,0,.45); }
+  h1 { font-size:34px; font-weight:800; color:var(--green); letter-spacing:1px; margin-bottom:6px; }
+  .sub { color:var(--muted); font-size:15px; margin-bottom:26px; }
+  .badge { display:inline-block; background:rgba(45,212,167,.12); color:var(--green);
+           border:1px solid rgba(45,212,167,.35); border-radius:999px; padding:5px 14px;
+           font-size:12px; font-weight:700; letter-spacing:2px; margin-bottom:18px; }
+  ul { list-style:none; }
+  li { display:flex; gap:14px; align-items:flex-start; padding:13px 0; border-top:1px solid var(--line); }
+  li:first-child { border-top:none; }
+  .ico { font-size:20px; line-height:1.4; }
+  .t { font-weight:600; color:var(--text); }
+  .d { color:var(--muted); font-size:13px; margin-top:2px; }
+  footer { margin-top:26px; color:var(--muted); font-size:12px; text-align:center; }
+  code { background:#0d1522; border:1px solid var(--line); border-radius:6px; padding:2px 7px;
+         color:var(--cyan); font-size:12px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">SAFEGAMINGOS · КОМНАТА</span>
+    <h1>Браузер в изоляции</h1>
+    <p class="sub">Этот Firefox работает в отдельной комнате: ограниченная память и CPU,
+      без доступа к другим комнатам, системным файлам и D-Bus. Вирус из загрузки не выберется за её границы.</p>
+    <ul>
+      <li><span class="ico">🛡️</span><div><div class="t">Лимиты ресурсов</div>
+        <div class="d">4&nbsp;ГБ RAM, 2 ядра CPU (cgroup). Скачал файл? Он записывается в журнал SafeGuard с источником.</div></div></li>
+      <li><span class="ico">🌐</span><div><div class="t">Сеть</div>
+        <div class="d">Браузеру нужен интернет — но системная шина D-Bus и другие комнаты закрыты.</div></div></li>
+      <li><span class="ico">🔍</span><div><div class="t">Проверка файлов</div>
+        <div class="d">Скачанное проверяй: <code>sudo sg-av scan ~/Downloads/файл</code> — при вирусе SafeGuard предложит заблокировать ссылку и карантин комнаты.</div></div></li>
+      <li><span class="ico">📋</span><div><div class="t">Источник загрузки</div>
+        <div class="d">SafeGuard помнит, с какого сайта скачан файл. Нашёл вирус → ссылка блокируется системно (разблокировать можно в SafeGuard).</div></div></li>
+    </ul>
+    <footer>safegamingOS 0.9.1 · рабочий стол → SafeGuard для комнат, антивируса и журнала</footer>
+  </div>
+</body>
+</html>

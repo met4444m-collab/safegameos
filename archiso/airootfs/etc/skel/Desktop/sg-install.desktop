@@ -2,7 +2,7 @@
 Type=Application
 Name=Установить safegamingOS
 Comment=Установить safegamingOS на диск (стирает выбранный диск!)
-Exec=sudo sg-install
+Exec=sg-install-gui
 Icon=drive-harddisk
-Terminal=true
+Terminal=false
 Categories=System;

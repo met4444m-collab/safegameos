@@ -1,9 +1,10 @@
 # safegamingOS — shared library for the room manager & SafeGuard AV.
-# Sourced by /usr/local/bin/sg-* scripts. Requires: sqlite3, coreutils.
+# Sourced by /usr/local/bin/sg-* scripts. Requires: sqlite3, coreutils, tar.
 
 SG_ROOT="/var/lib/sg-rooms"
 SG_DB="${SG_ROOT}/sg.db"
 SG_QUARANTINE="${SG_ROOT}/quarantine"
+SG_SNAPSHOTS="${SG_ROOT}/snapshots"
 SG_LOG="/var/log/sg-rooms"
 SG_LOCK="/run/lock/sg-rooms"
 
@@ -30,9 +31,12 @@ slugify() {
 
 sg_now() { date +%s; }
 
-# the real desktop user (the one who invoked the sudo'd tool)
+# the real desktop user (the one who invoked the sudo'd / pkexec'd tool)
+# pkexec exports PKEXEC_UID; sudo exports SUDO_USER.
 real_user() {
-  if [[ -n "${SUDO_USER:-}" ]]; then
+  if [[ -n "${PKEXEC_UID:-}" && "${PKEXEC_UID}" =~ ^[0-9]+$ ]]; then
+    id -un "${PKEXEC_UID}" 2>/dev/null || echo "${PKEXEC_UID}"
+  elif [[ -n "${SUDO_USER:-}" ]]; then
     echo "${SUDO_USER}"
   elif [[ -n "${LOGNAME:-}" ]]; then
     echo "${LOGNAME}"
@@ -45,8 +49,8 @@ real_user() {
 # database
 
 sg_ensure_db() {
-  mkdir -p "${SG_ROOT}" "${SG_QUARANTINE}" "${SG_LOG}" "${SG_LOCK}"
-  chmod 700 "${SG_ROOT}" "${SG_QUARANTINE}" "${SG_LOG}" "${SG_LOCK}"
+  mkdir -p "${SG_ROOT}" "${SG_QUARANTINE}" "${SG_SNAPSHOTS}" "${SG_LOG}" "${SG_LOCK}"
+  chmod 700 "${SG_ROOT}" "${SG_QUARANTINE}" "${SG_SNAPSHOTS}" "${SG_LOG}" "${SG_LOCK}"
   touch "${SG_DB}"
   chmod 600 "${SG_DB}"
   sqlite3 "${SG_DB}" <<'SQL'
@@ -127,6 +131,76 @@ SQL
 }
 
 # ---------------------------------------------------------------------------
+# snapshots (откат комнаты за секунды)
+
+sg_snapshot_create() {
+  local slug="$1" label="${2:-manual}"
+  local home; home="$(sg_room_home "${slug}")"
+  [[ -d "${home}" ]] || { echo "error: нет дома комнаты «${slug}»" >&2; return 1; }
+  mkdir -p "${SG_SNAPSHOTS}"
+  local file="${SG_SNAPSHOTS}/${slug}-${label}-$(date +%Y%m%d-%H%M%S).tar.zst"
+  # кэши исключаем: они пересоздаются, а снапшот остаётся быстрым и лёгким
+  tar --zstd -C "$(dirname "${home}")" -cf "${file}" "$(basename "${home}")" \
+      --exclude='.cache' --exclude='.local/share/Trash' \
+      --exclude='.config/google-chrome' --exclude='.config/chromium' 2>/dev/null
+  chmod 600 "${file}"
+  sg_event "snapshot" "Снапшот комнаты «${slug}»: ${file}"
+  echo "✓ снапшот: ${file}"
+}
+
+sg_snapshot_list() {
+  local slug="$1"
+  local snaps; snaps="$(ls -1t "${SG_SNAPSHOTS}"/"${slug}"-*.tar.zst 2>/dev/null)"
+  if [[ -z "${snaps}" ]]; then
+    echo "(нет снапшотов для «${slug}» — создайте: sudo sg-rooms snapshot ${slug})"
+    return 0
+  fi
+  local f
+  while IFS= read -r f; do
+    [[ -n "${f}" ]] && printf '%s  %s\n' "$(du -h "${f}" 2>/dev/null | cut -f1)" "${f}"
+  done <<< "${snaps}"
+}
+
+sg_snapshot_restore() {
+  local slug="$1" snap="${2:-}"
+  if [[ -z "${snap}" ]]; then
+    snap="$(ls -1t "${SG_SNAPSHOTS}"/"${slug}"-*.tar.zst 2>/dev/null | head -n1)"
+  fi
+  [[ -n "${snap}" && -f "${snap}" ]] || { echo "error: снапшот не найден" >&2; return 1; }
+  local home; home="$(sg_room_home "${slug}")"
+  sg_room_running "${slug}" && firejail --shutdown="${slug}" >/dev/null 2>&1
+  pkill -f -- "--name=${slug}" >/dev/null 2>&1 || true
+  sleep 1
+  local user; user="$(real_user)"
+  rm -rf "${home}"
+  mkdir -p "$(dirname "${home}")"
+  tar --zstd -C "$(dirname "${home}")" -xf "${snap}"
+  chown -R "${user}:${user}" "${home}" 2>/dev/null || true
+  sqlite3 "${SG_DB}" \
+    "UPDATE rooms SET status='running', quarantine_path=NULL WHERE id='${slug}';"
+  sg_event "restore" "Комната «${slug}» откачена к снапшоту ${snap}."
+  echo "✓ комната «${slug}» откачена к ${snap}"
+}
+
+sg_snapshot_prune() {
+  local slug="$1" keep="${2:-5}"
+  ls -1t "${SG_SNAPSHOTS}"/"${slug}"-*.tar.zst 2>/dev/null \
+    | tail -n +$((keep + 1)) \
+    | while IFS= read -r f; do [[ -n "${f}" ]] && rm -f "${f}"; done
+}
+
+# авто-снапшот: один раз в день на комнату, храним 5 последних
+sg_snapshot_auto() {
+  local slug="$1"
+  local today; today="$(date +%Y%m%d)"
+  local home; home="$(sg_room_home "${slug}")"
+  [[ -d "${home}" ]] || return 0
+  ls "${SG_SNAPSHOTS}"/"${slug}"-auto-"${today}"-*.tar.zst >/dev/null 2>&1 && return 0
+  sg_snapshot_create "${slug}" "auto" >/dev/null 2>&1 || true
+  sg_snapshot_prune "${slug}" 5
+}
+
+# ---------------------------------------------------------------------------
 # quarantine
 
 sg_room_running() {
@@ -137,6 +211,8 @@ sg_quarantine_room() {
   local slug="$1" why="$2"
   local home; home="$(sg_room_home "${slug}")"
   local qdir="${SG_QUARANTINE}/${slug}-$(sg_now)"
+  # страховка перед карантином: снапшот, чтобы откат был возможен
+  sg_snapshot_create "${slug}" "pre-quarantine" >/dev/null 2>&1 || true
   sg_room_running "${slug}" && firejail --shutdown="${slug}" >/dev/null 2>&1
   pkill -f -- "--name=${slug}" >/dev/null 2>&1 || true
   sleep 1

@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# safegamingOS — root installer helper (invoked via pkexec from sg-install-gui).
+# Performs the full install WITHOUT archinstall: GPT partitioning, format,
+# pacstrap, chroot configuration, branding, SafeGuard, swapfile.
+#
+# Usage: sg-install-run /path/to/config
+# The config is a shell snippet with: DISK= HOSTNAME= USERNAME= PASS= SWAP_GB= WINE=0|1
+# Progress is written to /tmp/sg-install.log as:
+#   PROGRESS:<0-100>|<message>   — step update
+#   ERROR|<message>              — fatal error
+#   DONE|<message>               — finished successfully
+set -uo pipefail
+
+CONF="${1:?usage: sg-install-run /path/to/config}"
+LOG=/tmp/sg-install.log
+: > "$LOG"
+chmod 666 "$LOG" 2>/dev/null || true
+
+step() { echo "PROGRESS:$1|$2" >> "$LOG"; }
+die() { echo "ERROR|$*" >> "$LOG"; exit 1; }
+
+[[ -f "$CONF" ]] || die "конфиг не найден: $CONF"
+# shellcheck source=/dev/null
+source "$CONF"
+rm -f "$CONF"
+
+: "${DISK:?}"; : "${HOSTNAME:?}"; : "${USERNAME:?}"; : "${PASS:?}"
+SWAP_GB="${SWAP_GB:-16}"
+WINE="${WINE:-0}"
+
+[[ "$DISK" =~ ^/dev/[a-z0-9]+$ ]] || die "неверный путь диска: $DISK"
+[[ -b "$DISK" ]] || die "диск не найден: $DISK"
+
+TARGET=/mnt
+cleanup() { umount -R "$TARGET" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+# handle nvme/mmcblk partition naming
+case "$DISK" in
+  *nvme*|*mmcblk*|*loop*) ESP="${DISK}p1"; ROOT="${DISK}p2" ;;
+  *) ESP="${DISK}1"; ROOT="${DISK}2" ;;
+esac
+
+# ---------------------------------------------------------------------------
+step 2 "Разметка диска $DISK (GPT). Весь диск будет стёрт..."
+parted -s "$DISK" mklabel gpt || die "не удалось создать GPT-разметку"
+parted -s "$DISK" mkpart ESP fat32 1MiB 513MiB || die "не удалось создать ESP-раздел"
+parted -s "$DISK" set 1 esp on || die "не удалось пометить ESP как загрузочный"
+parted -s "$DISK" mkpart root ext4 513MiB 100% || die "не удалось создать корневой раздел"
+udevadm settle 2>/dev/null || sleep 2
+
+step 4 "Форматирование разделов..."
+mkfs.fat -F32 "$ESP" >/dev/null 2>&1 || die "не удалось отформатировать ESP ($ESP)"
+mkfs.ext4 -F "$ROOT" >/dev/null 2>&1 || die "не удалось отформатировать корневой раздел ($ROOT)"
+
+step 6 "Монтирование..."
+mkdir -p "$TARGET"
+mount "$ROOT" "$TARGET" || die "не удалось смонтировать корневой раздел"
+mkdir -p "$TARGET/boot"
+mount "$ESP" "$TARGET/boot" || die "не удалось смонтировать ESP"
+
+step 8 "Копирование брендинга safegamingOS..."
+mkdir -p "$TARGET/usr/share/plymouth/themes" "$TARGET/usr/share/wallpapers" \
+         "$TARGET/usr/local/bin" "$TARGET/usr/local/lib/sg-rooms" \
+         "$TARGET/etc/polkit-1/rules.d" "$TARGET/etc/sysctl.d" \
+         "$TARGET/usr/share/applications" "$TARGET/etc/skel/Desktop" \
+         "$TARGET/etc/skel/.config/autostart" "$TARGET/usr/lib/systemd/system" \
+         "$TARGET/usr/share/color-schemes" "$TARGET/usr/share/konsole" \
+         "$TARGET/etc/firefox/policies" "$TARGET/usr/share/safegamingos" \
+         "$TARGET/usr/share/sddm/themes/breeze"
+cp -r /usr/share/plymouth/themes/safegamingos "$TARGET/usr/share/plymouth/themes/" 2>/dev/null || true
+cp /usr/share/wallpapers/safegamingos.png "$TARGET/usr/share/wallpapers/" 2>/dev/null || true
+cp /usr/share/sddm/themes/breeze/theme.conf.user "$TARGET/usr/share/sddm/themes/breeze/" 2>/dev/null || true
+cp /usr/share/color-schemes/safegamingOS.colors "$TARGET/usr/share/color-schemes/" 2>/dev/null || true
+cp /usr/share/konsole/safegamingOS.colorscheme /usr/share/konsole/safegamingOS.profile "$TARGET/usr/share/konsole/" 2>/dev/null || true
+cp /etc/skel/.config/konsolerc "$TARGET/etc/skel/.config/" 2>/dev/null || true
+cp /etc/firefox/policies/policies.json "$TARGET/etc/firefox/policies/" 2>/dev/null || true
+cp /usr/share/safegamingos/welcome.html "$TARGET/usr/share/safegamingos/" 2>/dev/null || true
+cp /usr/local/lib/sg-rooms/lib.sh "$TARGET/usr/local/lib/sg-rooms/lib.sh" 2>/dev/null || true
+cp /usr/local/bin/sg-* "$TARGET/usr/local/bin/" 2>/dev/null || true
+cp /etc/polkit-1/rules.d/49-safegamingos.rules "$TARGET/etc/polkit-1/rules.d/" 2>/dev/null || true
+cp /etc/sysctl.d/99-safegamingos.conf "$TARGET/etc/sysctl.d/" 2>/dev/null || true
+for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streaming.desktop; do
+  cp "/usr/share/applications/$f" "$TARGET/usr/share/applications/" 2>/dev/null || true
+  cp "/usr/share/applications/$f" "$TARGET/etc/skel/Desktop/" 2>/dev/null || true
+done
+cp /etc/skel/.config/autostart/sg-wallpaper.desktop "$TARGET/etc/skel/.config/autostart/" 2>/dev/null || true
+cp /usr/lib/systemd/system/sg-watch.service "$TARGET/usr/lib/systemd/system/" 2>/dev/null || true
+chmod +x "$TARGET"/usr/local/bin/sg-* 2>/dev/null || true
+
+step 10 "Установка пакетов (10–25 минут, нужен интернет)..."
+pacstrap -K "$TARGET" \
+  base linux linux-firmware intel-ucode amd-ucode \
+  networkmanager iwd plymouth \
+  plasma-meta plasma-nm plasma-pa sddm sddm-kcm kscreen konsole dolphin kate gwenview spectacle \
+  xdg-utils xdg-user-dirs xdg-desktop-portal xdg-desktop-portal-kde power-profiles-daemon \
+  ttf-dejavu noto-fonts noto-fonts-cjk \
+  pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils sof-firmware \
+  mesa libva-intel-driver intel-media-driver vulkan-intel vulkan-radeon \
+  obs-studio prismlauncher jre-openjdk firefox firejail \
+  xorg-server xorg-xephyr xorg-xauth \
+  sqlite inotify-tools python python-pyqt6 polkit polkit-kde-agent \
+  apparmor clamav dialog sudo vim git curl wget reflector rsync openssh \
+  grub efibootmgr acl \
+  || die "сбой установки пакетов (pacstrap). Проверьте интернет и лог."
+
+step 85 "Генерация /etc/fstab..."
+genfstab -U "$TARGET" >> "$TARGET/etc/fstab" || die "не удалось сгенерировать fstab"
+
+ROOT_PARTUUID=$(blkid -s PARTUUID -o value "$ROOT" 2>/dev/null || true)
+
+# ---------------------------------------------------------------------------
+step 88 "Настройка системы (пользователь, загрузчик, SafeGuard)..."
+# shell-quote the values so passwords/special chars survive the heredoc
+Q_HOSTNAME=$(printf '%q' "$HOSTNAME")
+Q_USERNAME=$(printf '%q' "$USERNAME")
+Q_PASS=$(printf '%q' "$PASS")
+Q_SWAP_GB=$(printf '%q' "$SWAP_GB")
+SWAP_MIB=$(( SWAP_GB * 1024 ))   # plain number, interpolated below — no escaping traps
+Q_WINE=$(printf '%q' "$WINE")
+Q_DISK=$(printf '%q' "$DISK")
+Q_ROOT_PARTUUID=$(printf '%q' "$ROOT_PARTUUID")
+cat > "$TARGET/root/sg-chroot-setup.sh" <<EOF
+#!/usr/bin/env bash
+# runs inside the chroot
+set -uo pipefail
+HOSTNAME='$Q_HOSTNAME'
+USERNAME='$Q_USERNAME'
+PASS='$Q_PASS'
+SWAP_GB='$Q_SWAP_GB'
+WINE='$Q_WINE'
+DISK='$Q_DISK'
+ROOT_PARTUUID='$Q_ROOT_PARTUUID'
+
+# --- locale / hostname / branding ---
+sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+locale-gen >/dev/null 2>&1 || true
+echo 'LANG=en_US.UTF-8' > /etc/locale.conf
+echo 'KEYMAP=us' > /etc/vconsole.conf
+echo "\$HOSTNAME" > /etc/hostname
+ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+cat > /usr/lib/os-release <<'EOF'
+NAME="safegamingOS"
+PRETTY_NAME="safegamingOS 0.9.1"
+ID=safegamingos
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;45;212;167"
+HOME_URL="https://github.com/met4444m-collab/safegamingos"
+LOGO=safegamingos
+EOF
+
+# --- user (wheel + desktop groups, как в live) ---
+useradd -m -G wheel,audio,video,input,storage,power,users,network,optical,rfkill -s /bin/bash "\$USERNAME" 2>/dev/null || true
+echo "\$USERNAME:\$PASS" | chpasswd
+echo "root:\$PASS" | chpasswd
+
+# --- рабочий стол пользователя: иконки комнат + обои (executable = KDE
+#     доверяет и не спрашивает «Allow launching») ---
+mkdir -p "/home/\$USERNAME/Desktop" "/home/\$USERNAME/.config/autostart"
+for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streaming.desktop; do
+  cp "/usr/share/applications/\$f" "/home/\$USERNAME/Desktop/" 2>/dev/null || true
+done
+chmod +x "/home/\$USERNAME/Desktop/"*.desktop 2>/dev/null || true
+cp /etc/skel/.config/autostart/sg-wallpaper.desktop "/home/\$USERNAME/.config/autostart/" 2>/dev/null || true
+chown -R "\$USERNAME:\$USERNAME" "/home/\$USERNAME/Desktop" "/home/\$USERNAME/.config" 2>/dev/null || true
+
+# --- загрузчик: GRUB (UEFI fallback + BIOS) ---
+if [ -d /sys/firmware/efi ]; then
+  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB --removable >/dev/null 2>&1 \
+    || grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB >/dev/null 2>&1 || true
+else
+  grub-install --target=i386-pc --recheck "\$DISK" >/dev/null 2>&1 || true
+fi
+sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"/' /etc/default/grub
+grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
+
+# --- initramfs: plymouth-хук + тема ---
+if command -v plymouth-set-default-theme >/dev/null 2>&1; then
+  plymouth-set-default-theme safegamingos 2>/dev/null || true
+fi
+if ! grep -q plymouth /etc/mkinitcpio.conf 2>/dev/null; then
+  sed -i 's/\\(HOOKS=([^)]*kms\\)/\\1 plymouth/' /etc/mkinitcpio.conf 2>/dev/null \
+    || sed -i 's/\\(HOOKS=([^)]*udev\\)/\\1 plymouth/' /etc/mkinitcpio.conf 2>/dev/null || true
+fi
+mkinitcpio -P >/dev/null 2>&1 || true
+
+# --- swapfile ${SWAP_GB}G (${SWAP_MIB} MiB) ---
+if ! grep -qE "swapfile" /etc/fstab 2>/dev/null; then
+  if fallocate -l "${SWAP_MIB}M" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=${SWAP_MIB} 2>/dev/null; then
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null 2>&1
+    echo "/swapfile none swap defaults 0 0" >> /etc/fstab
+  fi
+fi
+
+# --- SafeGuard: база комнат, службы ---
+if [ -f /usr/local/lib/sg-rooms/lib.sh ]; then
+  # shellcheck source=/dev/null
+  source /usr/local/lib/sg-rooms/lib.sh
+  sg_ensure_db 2>/dev/null || true
+  sg_default_rooms 2>/dev/null || true
+fi
+systemctl enable sddm NetworkManager sg-watch apparmor >/dev/null 2>&1 || true
+systemctl enable clamav-freshclam >/dev/null 2>&1 || true
+if [ -f /etc/sysctl.d/99-safegamingos.conf ]; then
+  sysctl --system >/dev/null 2>&1 || true
+fi
+
+# --- ребрендинг: скрыть KDE Welcome Center ---
+mkdir -p /etc/xdg/autostart
+printf '[Desktop Entry]\nType=Application\nName=Plasma Welcome\nHidden=true\nNoDisplay=true\n' > /etc/xdg/autostart/org.kde.plasma-welcome.desktop
+
+# --- Windows-игры (по выбору) ---
+if [ "\$WINE" = "1" ]; then
+  sed -i '/^#[multilib]/{s/^#//;n;s/^#//;}' /etc/pacman.conf
+  pacman -Sy --noconfirm >/dev/null 2>&1 || true
+  pacman -S --noconfirm --needed wine wine-mono wine-gecko steam lutris gamemode \
+    lib32-gamemode lib32-mesa lib32-vulkan-intel lib32-vulkan-radeon lib32-libpulse \
+    >/dev/null 2>&1 || true
+fi
+
+rm -f /root/sg-chroot-setup.sh
+exit 0
+EOF
+
+arch-chroot "$TARGET" /bin/bash /root/sg-chroot-setup.sh || die "сбой настройки системы (см. лог)"
+[ -e "$TARGET/root/sg-chroot-setup.sh" ] && rm -f "$TARGET/root/sg-chroot-setup.sh"
+
+step 100 "Установка завершена"
+echo "DONE|Установка safegamingOS завершена! Отключите ISO и перезагрузите виртуалку."
+exit 0

@@ -1,121 +1,39 @@
 #!/usr/bin/env bash
 # safegamingOS — install the OS to disk.
-# Wraps archinstall (the official Arch installer) with a branded, minimal
-# pre-configuration, then applies safegamingOS branding and system tweaks
-# to the freshly installed system (boot splash, wallpaper, 16 GiB swapfile,
-# SafeGuard room database).
+#
+# Preferred path: graphical master (sg-install-gui) when a desktop session is
+# available — double-click "Установить safegamingOS" on the live desktop.
+# TTY fallback: this dialog-driven frontend. Both collect the same options
+# (disk, user, password, swap, Wine) and hand off to the root helper
+# sg-install-run, which does the real install: GPT partitioning, formatting,
+# pacstrap, chroot configuration, branding, SafeGuard.
+#
+# No Python, no archinstall — its JSON config schema drifts between versions
+# and used to die with a Python traceback mid-install.
 set -uo pipefail
 
-TMPCFG=/tmp/sg-archinstall-config.json
-TMPCRED=/tmp/sg-archinstall-creds.json
-trap 'rm -f "$TMPCFG" "$TMPCRED"' EXIT
+# If a graphical session is available, prefer the Windows-10-style GUI installer
+# (runs as the desktop user, does the privileged work via pkexec sg-install-run).
+if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && command -v sg-install-gui >/dev/null 2>&1; then
+  exec sg-install-gui "$@"
+fi
+
+TMPCONF=/tmp/sg-install.conf
+LOG=/tmp/sg-install.log
+trap 'rm -f "$TMPCONF"' EXIT
 
 # ---------------------------------------------------------------------------
 banner() {
   clear
   echo "=============================================="
-  echo "  safegamingOS 0.9.0 — установка на диск"
+  echo "  safegamingOS 0.9.1 — установка на диск"
   echo "=============================================="
   echo
 }
 
 # ---------------------------------------------------------------------------
-post_pass() {
-  local target="${1:-/mnt}"
-  [[ -d "$target/etc" && -f "$target/etc/fstab" ]] || return 0
-
-  echo "==> Брендирование установленной системы..."
-
-  mkdir -p "$target/usr/share/plymouth/themes" "$target/usr/share/wallpapers" \
-           "$target/usr/local/bin" "$target/usr/local/lib/sg-rooms" \
-           "$target/etc/polkit-1/rules.d" "$target/usr/share/applications"
-  cp -r /usr/share/plymouth/themes/safegamingos "$target/usr/share/plymouth/themes/" 2>/dev/null || true
-  cp /usr/share/wallpapers/safegamingos.png "$target/usr/share/wallpapers/" 2>/dev/null || true
-  cp /usr/local/lib/sg-rooms/lib.sh "$target/usr/local/lib/sg-rooms/lib.sh" 2>/dev/null || true
-  cp /usr/local/bin/sg-* "$target/usr/local/bin/" 2>/dev/null || true
-  cp /etc/polkit-1/rules.d/49-safegamingos.rules "$target/etc/polkit-1/rules.d/" 2>/dev/null || true
-  for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streaming.desktop; do
-    cp "/usr/share/applications/$f" "$target/usr/share/applications/" 2>/dev/null || true
-  done
-  # рабочий стол и обои «из коробки» для всех новых пользователей
-  mkdir -p "$target/etc/skel/Desktop" "$target/etc/skel/.config/autostart"
-  for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streaming.desktop; do
-    cp "/usr/share/applications/$f" "$target/etc/skel/Desktop/" 2>/dev/null || true
-  done
-  cp /etc/skel/.config/autostart/sg-wallpaper.desktop "$target/etc/skel/.config/autostart/" 2>/dev/null || true
-  chmod +x "$target"/usr/local/bin/sg-* 2>/dev/null || true
-
-  arch-chroot "$target" env USERNAME="$USERNAME" /bin/bash -c '
-    set -u
-    # --- boot splash: theme + hook + rebuild initramfs ---
-    if command -v plymouth-set-default-theme >/dev/null 2>&1; then
-      plymouth-set-default-theme safegamingos 2>/dev/null || true
-    fi
-    if ! grep -q plymouth /etc/mkinitcpio.conf 2>/dev/null; then
-      sed -i "s/\(HOOKS=([^)]*keymap consolefont\) /\1 plymouth /" /etc/mkinitcpio.conf 2>/dev/null \
-        || sed -i "s/\(HOOKS=([^)]*kms\) /\1 plymouth /" /etc/mkinitcpio.conf 2>/dev/null || true
-    fi
-    mkinitcpio -P >/dev/null 2>&1 || true
-
-    # --- quiet splash on the installed boot entries ---
-    if ls /boot/loader/entries/*.conf >/dev/null 2>&1; then
-      sed -i "s/^options /options quiet splash /" /boot/loader/entries/*.conf 2>/dev/null || true
-    fi
-
-    # --- 16 GiB swapfile ---
-    if ! grep -qE "swapfile" /etc/fstab 2>/dev/null; then
-      if fallocate -l 16G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=16384 2>/dev/null; then
-        chmod 600 /swapfile
-        mkswap /swapfile >/dev/null 2>&1
-        echo "/swapfile none swap defaults 0 0" >> /etc/fstab
-      fi
-    fi
-
-    # --- SafeGuard room database + antivirus/enforcement services ---
-    if [[ -f /usr/local/lib/sg-rooms/lib.sh ]]; then
-      # shellcheck source=/dev/null
-      source /usr/local/lib/sg-rooms/lib.sh
-      sg_ensure_db 2>/dev/null || true
-      sg_default_rooms 2>/dev/null || true
-    fi
-    if systemctl list-unit-files apparmor.service >/dev/null 2>&1; then
-      systemctl enable apparmor >/dev/null 2>&1 || true
-    fi
-    if systemctl list-unit-files clamav-freshclam.service >/dev/null 2>&1; then
-      systemctl enable clamav-freshclam >/dev/null 2>&1 || true
-      freshclam >/dev/null 2>&1 || true
-    fi
-
-    # --- multilib + Windows games (Wine/Steam/Lutris) ---
-    if grep -q '^\#\[multilib\]' /etc/pacman.conf 2>/dev/null; then
-      sed -i '/^\#\[multilib\]/{s/^\#//;n;s/^\#//;}' /etc/pacman.conf
-      pacman -Sy --noconfirm >/dev/null 2>&1 || true
-      pacman -S --noconfirm --needed \
-        wine wine-mono wine-gecko steam lutris gamemode lib32-gamemode \
-        lib32-mesa lib32-vulkan-intel lib32-vulkan-radeon lib32-libpulse \
-        >/dev/null 2>&1 || echo "  (multilib: wine/steam установлены позже: sudo pacman -S wine steam lutris)"
-    fi
-
-    # --- рабочий стол установленного пользователя: ярлыки комнат + обои ---
-    if [[ -n "${USERNAME:-}" && -d "/home/${USERNAME}" ]]; then
-      mkdir -p "/home/${USERNAME}/Desktop" "/home/${USERNAME}/.config/autostart"
-      for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streaming.desktop; do
-        cp "/usr/share/applications/${f}" "/home/${USERNAME}/Desktop/" 2>/dev/null || true
-      done
-      cp /etc/skel/.config/autostart/sg-wallpaper.desktop \
-        "/home/${USERNAME}/.config/autostart/" 2>/dev/null || true
-      chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/Desktop" \
-        "/home/${USERNAME}/.config" 2>/dev/null || true
-    fi
-  '
-
-  echo "==> Готово. Система установлена на диск."
-  echo "    Пользователь: $USERNAME. После перезагрузки — рабочий стол safegamingOS."
-}
-
-# ---------------------------------------------------------------------------
 # checks
-for c in dialog archinstall lsblk arch-chroot uuidgen; do
+for c in dialog lsblk sg-install-run; do
   command -v "$c" >/dev/null 2>&1 || { echo "error: not found: $c" >&2; exit 1; }
 done
 [[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-install" >&2; exit 1; }
@@ -141,7 +59,8 @@ DISK=$(dialog --stdout --backtitle "safegamingOS installer" \
 # user account
 USERNAME=$(dialog --stdout --backtitle "safegamingOS installer" \
   --inputbox "Имя пользователя:" 0 0 "sg") || { banner; echo "Отменено."; exit 1; }
-[[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]] || { banner; echo "error: недопустимое имя пользователя" >&2; exit 1; }
+[[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]{2,31}$ ]] \
+  || { banner; echo "error: недопустимое имя пользователя (3–32 символа: a-z, 0-9, _, -)" >&2; exit 1; }
 
 PASS=$(dialog --stdout --backtitle "safegamingOS installer" \
   --passwordbox "Пароль пользователя:" 0 0) || { banner; echo "Отменено."; exit 1; }
@@ -151,118 +70,56 @@ if [[ -z "$PASS" || "$PASS" != "$PASS2" ]]; then
   banner; echo "error: пароль пустой или не совпадает" >&2; exit 1
 fi
 
+SWAP_GB=$(dialog --stdout --backtitle "safegamingOS installer" \
+  --inputbox "Файл подкачки, ГБ (0 = без swap):" 0 0 "16") || { banner; echo "Отменено."; exit 1; }
+[[ "$SWAP_GB" =~ ^[0-9]+$ ]] || { banner; echo "error: неверный размер подкачки" >&2; exit 1; }
+
+if dialog --stdout --backtitle "safegamingOS installer" \
+  --yesno "Установить Windows-игры (Wine + Steam + Lutris, ~2–3 ГБ, multilib)?\n\nДля Minecraft/Роблокса/OBS не обязательно — можно поставить позже:\n  sudo pacman -S wine steam lutris" 0 0; then
+  WINE=1
+else
+  WINE=0
+fi
+
 dialog --stdout --backtitle "safegamingOS installer" \
-  --yesno "Установить safegamingOS на диск\n$DISK\n\nВСЕ ДАННЫЕ НА ДИСКЕ БУДУТ УДАЛЕНЫ.\nПродолжить?" 0 0 \
+  --yesno "Установить safegamingOS на диск\n$DISK\n\nПользователь: $USERNAME\nПодкачка: ${SWAP_GB} ГБ\nWindows-игры: $([ "$WINE" = "1" ] && echo да || echo нет)\n\nВСЕ ДАННЫЕ НА ДИСКЕ БУДУТ УДАЛЕНЫ.\nПродолжить?" 0 0 \
   || { banner; echo "Отменено."; exit 1; }
 
 # ---------------------------------------------------------------------------
-# build archinstall config (root partition = whole disk minus 512 MiB /boot)
-SIZE_MIB=$(( $(lsblk -dbno SIZE "$DISK") / 1024 / 1024 ))
-# /boot = 512 MiB (starts at 1 MiB), root fills the rest, 1 MiB left for backup GPT.
-ROOT_SIZE_MIB=$(( SIZE_MIB - 513 - 1 ))
-[[ $ROOT_SIZE_MIB -gt 4096 ]] || { banner; echo "error: диск слишком маленький (нужно > ~5 ГБ)" >&2; exit 1; }
-BOOT_ID=$(uuidgen)
-ROOT_ID=$(uuidgen)
-
-cat > "$TMPCFG" <<EOF
+# write config (shell-quoted values so any special chars in the password survive)
 {
-  "archinstall-language": "English",
-  "audio_config": {"audio": "pipewire"},
-  "bootloader_config": {"bootloader": "Systemd-boot", "uki": false, "removable": false, "plymouth": true},
-  "debug": false,
-  "disk_config": {
-    "config_type": "default_layout",
-    "device_modifications": [
-      {
-        "device": "$DISK",
-        "partitions": [
-          {
-            "btrfs": [],
-            "dev_path": null,
-            "flags": ["boot"],
-            "fs_type": "fat32",
-            "size": {"sector_size": {"unit": "B", "value": 512}, "unit": "MiB", "value": 512},
-            "mount_options": [],
-            "mountpoint": "/boot",
-            "obj_id": "$BOOT_ID",
-            "start": {"sector_size": {"unit": "B", "value": 512}, "unit": "MiB", "value": 1},
-            "status": "create",
-            "type": "primary"
-          },
-          {
-            "btrfs": [],
-            "dev_path": null,
-            "flags": [],
-            "fs_type": "ext4",
-            "size": {"sector_size": {"unit": "B", "value": 512}, "unit": "MiB", "value": $ROOT_SIZE_MIB},
-            "mount_options": [],
-            "mountpoint": "/",
-            "obj_id": "$ROOT_ID",
-            "start": {"sector_size": {"unit": "B", "value": 512}, "unit": "MiB", "value": 513},
-            "status": "create",
-            "type": "primary"
-          }
-        ],
-        "wipe": true
-      }
-    ]
-  },
-  "hostname": "safegamingos",
-  "kernels": ["linux"],
-  "locale_config": {"kb_layout": "us", "sys_enc": "UTF-8", "sys_lang": "en_US"},
-  "network_config": {"type": "nm"},
-  "no_pkg_lookups": false,
-  "ntp": true,
-  "offline": false,
-  "packages": [
-    "plasma-desktop", "plasma-nm", "plasma-pa", "konsole", "dolphin",
-    "kde-gtk-config", "breeze-gtk", "sddm", "xorg-server", "kscreen",
-    "xdg-desktop-portal", "xdg-desktop-portal-kde", "dialog", "ttf-dejavu",
-    "mesa", "vulkan-radeon", "vulkan-intel", "libva-mesa-driver", "intel-media-driver",
-    "power-profiles-daemon", "firefox", "jre-openjdk",
-    "obs-studio", "pipewire", "pipewire-pulse", "pipewire-audio", "wireplumber", "gst-plugin-pipewire",
-    "firejail", "apparmor", "clamav", "sqlite", "inotify-tools", "acl",
-    "python", "python-pyqt6", "polkit", "polkit-kde-agent",
-    "plymouth", "htop", "openssh", "git", "networkmanager",
-    "intel-ucode", "amd-ucode"
-  ],
-  "pacman_config": {"color": true, "parallel_downloads": 10},
-  "services": ["sddm", "NetworkManager"],
-  "silent": true,
-  "swap": false,
-  "timezone": "UTC",
-  "version": "2.8.6"
-}
-EOF
-
-cat > "$TMPCRED" <<EOF
-{
-  "users": [
-    {"sudo": true, "username": "$USERNAME", "enc_password": "$PASS"}
-  ],
-  "root_enc_password": "$PASS"
-}
-EOF
+  printf 'DISK=%s\n'    "$(printf '%q' "$DISK")"
+  printf 'HOSTNAME=%s\n' "$(printf '%q' "safegamingos")"
+  printf 'USERNAME=%s\n' "$(printf '%q' "$USERNAME")"
+  printf 'PASS=%s\n'    "$(printf '%q' "$PASS")"
+  printf 'SWAP_GB=%s\n' "$(printf '%q' "$SWAP_GB")"
+  printf 'WINE=%s\n'    "$(printf '%q' "$WINE")"
+} > "$TMPCONF"
+chmod 600 "$TMPCONF"
 
 # ---------------------------------------------------------------------------
 banner
-echo "==> Запуск установки (archinstall) на $DISK ..."
-echo "    Это займёт 10–30 минут (скачивание и установка пакетов)."
+echo "==> Установка на $DISK ..."
+echo "    Разметка → форматирование → скачивание пакетов (10–25 мин) → настройка."
+echo "    Не выключайте компьютер и не закрывайте окно."
 echo
 
-if ! archinstall --config "$TMPCFG" --creds "$TMPCRED" --silent; then
-  echo
-  echo "!! Автоконфигурация не подошла к этой версии archinstall —"
-  echo "   запускается обычный интерактивный установщик archinstall."
-  echo "   В нём выберите: диск = $DISK, профиль = Desktop / KDE Plasma,"
-  echo "   пользователя и пароль (те же, что вы задали)."
-  echo
-  archinstall
+sg-install-run "$TMPCONF" &
+pid=$!
+# показываем ход установки (строки PROGRESS: превращаются в обычный текст)
+tail -n +1 -f --pid="$pid" "$LOG" 2>/dev/null | sed 's/^PROGRESS:[0-9]*|//'
+wait "$pid"
+rc=$?
+
+echo
+if [[ ${rc} -eq 0 ]] && grep -q '^DONE|' "$LOG" 2>/dev/null; then
+  echo "=============================================="
+  echo "  Установка safegamingOS завершена!"
+  echo "  Отключите ISO/флешку и перезагрузите: reboot"
+  echo "=============================================="
+  exit 0
+else
+  echo "!! Установка прервалась (код ${rc}). Последние строки лога:" >&2
+  tail -n 25 "$LOG" >&2
+  exit 1
 fi
-
-# ---------------------------------------------------------------------------
-banner
-post_pass /mnt
-echo
-echo "Установка завершена. Можно перезагрузить компьютер (reboot)."
-exit 0

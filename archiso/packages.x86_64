@@ -9,7 +9,6 @@ mkinitcpio
 mkinitcpio-archiso
 # --- boot / disk tools (installer) ---
 arch-install-scripts
-archinstall
 syslinux
 grub
 efibootmgr

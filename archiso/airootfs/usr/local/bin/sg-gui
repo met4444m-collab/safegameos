@@ -66,9 +66,9 @@ def run(cmd, timeout=180):
 
 
 def pkexec(cmd):
-    """Privileged sg-* call via pkexec, keeping the real user for SUDO_USER."""
-    user = os.environ.get("USER", os.environ.get("LOGNAME", ""))
-    return ["pkexec", "env", f"SUDO_USER={user}"] + cmd
+    """Privileged sg-* call via pkexec (absolute path so the polkit rule
+    for '/sg-' matches; pkexec exports PKEXEC_UID for the real user)."""
+    return ["pkexec", f"/usr/local/bin/{cmd[0]}"] + cmd[1:]
 
 
 def db_rooms():

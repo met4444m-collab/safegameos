@@ -17,6 +17,12 @@
 #   sudo sg-av quarantine ROOM [причина]
 #   sudo sg-av restore ROOM
 #   sudo sg-av delete ROOM
+#   sudo sg-av watch [--interval N] [--cpu-limit PCT] [--hits N] [--auto-quarantine]
+#       Поведенческий сторож (без сигнатур): устойчивая CPU-нагрузка (майнер),
+#       упор в TasksMax (fork-бомба), упор в лимит RAM. Работает фоном как
+#       служба sg-watch; события — в журнал SafeGuard. По умолчанию только
+#       детектит и логирует; --auto-quarantine = карантин по решению системы
+#       (по ТЗ решение принимает пользователь — флаг по умолчанию выключен).
 set -uo pipefail
 
 source /usr/local/lib/sg-rooms/lib.sh
@@ -115,6 +121,88 @@ scan() {
 }
 
 # ---------------------------------------------------------------------------
+# поведенческий сторож: майнер / fork-бомба / упор в RAM (без сигнатур)
+watch() {
+  local interval="${SG_WATCH_INTERVAL:-10}" cpu_limit="${SG_WATCH_CPU_LIMIT:-250}" \
+        hits_needed="${SG_WATCH_HITS:-5}" mem_pct="${SG_WATCH_MEM_PCT:-90}" auto_q=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --interval)       interval="${2:?}"; shift 2 ;;
+      --cpu-limit)      cpu_limit="${2:?}"; shift 2 ;;
+      --hits)           hits_needed="${2:?}"; shift 2 ;;
+      --auto-quarantine) auto_q=1; shift ;;
+      -h|--help)        usage; exit 0 ;;
+      *) echo "error: неизвестный флаг: $1" >&2; exit 1 ;;
+    esac
+  done
+  [[ "${interval}" =~ ^[0-9]+$ && "${interval}" -gt 0 ]] || interval=10
+  [[ "${cpu_limit}" =~ ^[0-9]+$ ]] || cpu_limit=250
+  [[ "${hits_needed}" =~ ^[0-9]+$ && "${hits_needed}" -gt 0 ]] || hits_needed=5
+
+  sg_ensure_db 2>/dev/null || true
+  local -A prev_cpu=() hits=()
+  echo "== SafeGuard watchdog: интервал ${interval}s, CPU-порог ${cpu_limit}% (${hits_needed} проверок подряд), авто-карантин: $([ ${auto_q} -eq 1 ] && echo ДА || echo нет)"
+  echo "   Ctrl+C для остановки. События: sg-av status / журнал SafeGuard."
+  while true; do
+    local units=""
+    units="$(systemctl list-units --type=scope --no-legend --plain 2>/dev/null | awk '$1 ~ /^sg-/ {print $1}')"
+    for u in ${units}; do
+      local slug="${u%.scope}"
+      local cur_ns prev_ns cpu_now mem_cur mem_max tasks tasksmax
+      cur_ns="$(systemctl show "${u}" -p CPUUsageNSec --value 2>/dev/null)"
+      prev_ns="${prev_cpu[${slug}]:-}"
+      mem_cur="$(systemctl show "${u}" -p MemoryCurrent --value 2>/dev/null)"
+      mem_max="$(systemctl show "${u}" -p MemoryMax --value 2>/dev/null)"
+      tasks="$(systemctl show "${u}" -p TasksCurrent --value 2>/dev/null)"
+      tasksmax="$(systemctl show "${u}" -p TasksMax --value 2>/dev/null)"
+      cpu_now=0
+      if [[ -n "${cur_ns}" && -n "${prev_ns}" ]]; then
+        local dns=$(( cur_ns - prev_ns ))
+        [[ ${dns} -lt 0 ]] && dns=0
+        cpu_now=$(( dns / interval / 10000000 ))   # % одного ядра
+      fi
+      prev_cpu[${slug}]="${cur_ns:-0}"
+      # --- майнер/DoS: устойчивая нагрузка выше порога ---
+      if [[ ${cpu_now} -ge ${cpu_limit} ]]; then
+        hits[${slug}]=$(( ${hits[${slug}]:-0} + 1 ))
+      else
+        hits[${slug}]=0
+      fi
+      if [[ ${hits[${slug}]:-0} -ge ${hits_needed} ]]; then
+        local msg="Подозрение на майнинг/DoS: комната «${slug}» держит CPU ${cpu_now}% (${hits_needed} проверок подряд)."
+        echo "[$(date '+%F %T')] ⚠ ${msg}"
+        sg_event "miner-suspect" "${msg}"
+        hits[${slug}]=0
+        if [[ ${auto_q} -eq 1 ]]; then
+          echo "==> авто-карантин комнаты «${slug}»..."
+          sg_quarantine_room "${slug}" "watchdog: устойчивая CPU-нагрузка ${cpu_now}%"
+        fi
+      fi
+      # --- упор в лимит RAM (memory-exhaust / утечка) ---
+      if [[ -n "${mem_cur}" && -n "${mem_max}" \
+            && "${mem_max}" != "18446744073709551615" && "${mem_cur}" != "18446744073709551615" ]]; then
+        local pct=$(( mem_cur * 100 / mem_max ))
+        if [[ ${pct} -ge ${mem_pct} ]]; then
+          local mmsg="Комната «${slug}» у лимита RAM: ${pct}% (возможен memory-exhaust-эксплойт)."
+          echo "[$(date '+%F %T')] ⚠ ${mmsg}"
+          sg_event "mem-pressure" "${mmsg}"
+        fi
+      fi
+      # --- fork-бомба: почти весь TasksMax занят ---
+      if [[ -n "${tasks}" && -n "${tasksmax}" \
+            && "${tasksmax}" != "18446744073709551615" && "${tasksmax}" -gt 0 ]]; then
+        if [[ ${tasks} -ge $(( tasksmax * 90 / 100 )) ]]; then
+          local fmsg="Fork-бомба? Комната «${slug}»: ${tasks} процессов из лимита ${tasksmax}."
+          echo "[$(date '+%F %T')] ⚠ ${fmsg}"
+          sg_event "forkbomb-suspect" "${fmsg}"
+        fi
+      fi
+    done
+    sleep "${interval}"
+  done
+}
+
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 live() {
   local units u
@@ -182,6 +270,7 @@ shift || true
 case "${cmd}" in
   scan)       scan "$@" ;;
   live)       live ;;
+  watch)      watch "$@" ;;
   status|list) status "${1:-}" ;;
   block)      sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-av block URL [virus]" >&2; exit 1; }
               sg_block_url "$1" "${2:-user}" ;;

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=safegamingOS Installer
+Comment=Открыть установщик safegamingOS (только live-система)
+Exec=/usr/local/bin/sg-live-installer
+Icon=drive-harddisk
+Terminal=false
+X-KDE-autostart-after=panel
+OnlyShowIn=KDE;

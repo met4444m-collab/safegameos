@@ -1,0 +1,12 @@
+[Unit]
+Description=safegamingOS SafeGuard watchdog (behavioral detection: miner, fork-bomb, RAM)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sg-av watch --interval 10 --cpu-limit 250 --hits 5
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

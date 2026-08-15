@@ -6,7 +6,6 @@
 set -uo pipefail
 
 room="${1:-browser}"
-user="$(id -un)"
 
 case "${room}" in
   browser)   app="firefox"       flags=() ;;
@@ -15,4 +14,4 @@ case "${room}" in
   *) echo "usage: sg-open browser|games|streaming" >&2; exit 1 ;;
 esac
 
-exec pkexec env SUDO_USER="${user}" sg-room-run "${flags[@]}" "${room}" -- "${app}"
+exec pkexec /usr/local/bin/sg-room-run "${flags[@]}" "${room}" -- "${app}"

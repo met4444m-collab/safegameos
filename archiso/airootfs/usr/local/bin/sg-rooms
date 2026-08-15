@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # safegamingOS — список комнат изоляции и их разрешений.
-# Usage: sg-rooms [list] | sg-rooms ROOM
+# Usage:
+#   sg-rooms [list]                       список комнат и разрешений
+#   sg-rooms ROOM                         детали комнаты
+#   sg-rooms snapshot ROOM [label]        снапшот комнаты (откат за секунды)
+#   sg-rooms list-snapshots ROOM          список снапшотов комнаты
+#   sg-rooms restore ROOM [SNAPSHOT]      откат комнаты к снапшоту
 set -uo pipefail
 
 source /usr/local/lib/sg-rooms/lib.sh
@@ -44,9 +49,17 @@ room() {
     || echo "(нет записей)"
 }
 
-case "${1:-list}" in
-  list|status) list ;;
-  -h|--help)   grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash' ;;
-  *)           room "$1" ;;
+cmd="${1:-list}"
+shift || true
+case "${cmd}" in
+  list|status)   list ;;
+  snapshot)      sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-rooms snapshot ROOM [label]" >&2; exit 1; }
+                 sg_snapshot_create "$(slugify "$1")" "${2:-manual}" ;;
+  list-snapshots) sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-rooms list-snapshots ROOM" >&2; exit 1; }
+                 sg_snapshot_list "$(slugify "$1")" ;;
+  restore)       sg_ensure_db; [[ $# -ge 1 ]] || { echo "usage: sg-rooms restore ROOM [SNAPSHOT]" >&2; exit 1; }
+                 sg_snapshot_restore "$(slugify "$1")" "${2:-}" ;;
+  -h|--help)     grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash' ;;
+  *)             room "${cmd}" ;;
 esac
 exit 0

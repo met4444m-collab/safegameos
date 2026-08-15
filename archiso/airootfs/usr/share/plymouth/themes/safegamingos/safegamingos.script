@@ -2,6 +2,11 @@
  * The "SAFEGAMINGOS" logo bounces off the screen edges and changes
  * color on every bounce, like the classic DVD logo.
  * Rendered from logo-0.png .. logo-7.png (8 color variants).
+ *
+ * NOTE: only Image methods (GetWidth/GetHeight/Scale) are used for
+ * dimensions — Sprite has no GetWidth/GetHeight in the script plugin,
+ * calling them kills the refresh function (logo drifted off-screen
+ * and never bounced back). Widths are cached after the one-time scale.
  */
 
 Window.SetBackgroundTopColor(0.02, 0.04, 0.08);
@@ -20,10 +25,12 @@ logo = Sprite(imgs[0]);
 
 x = 30;
 y = 30;
-vx = 3.0;
-vy = 2.0;
+vx = 4.0;
+vy = 3.0;
 idx = 0;
 scaled = 0;
+w = 0;
+h = 0;
 
 fun on_refresh() {
     W = Window.GetWidth();
@@ -32,15 +39,15 @@ fun on_refresh() {
 
     if (scaled == 0) {
         scale = (W * 0.42) / imgs[0].GetWidth();
+        if (scale <= 0) { scale = 1; }
         for (i = 0; i < 8; i++) {
             imgs[i] = imgs[i].Scale(imgs[i].GetWidth() * scale, imgs[i].GetHeight() * scale);
         }
         logo.SetImage(imgs[0]);
+        w = imgs[0].GetWidth();
+        h = imgs[0].GetHeight();
         scaled = 1;
     }
-
-    w = logo.GetWidth();
-    h = logo.GetHeight();
 
     x = x + vx;
     y = y + vy;
@@ -57,7 +64,6 @@ fun on_refresh() {
     logo.SetY(y);
 }
 
-Plymouth.SetRefreshRate(30);
 Plymouth.SetRefreshFunction(on_refresh);
 
 fun on_quit() {

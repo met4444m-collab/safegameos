@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# safegamingOS — apply the branded desktop theme at session start:
+# wallpaper + Plasma color scheme. Safe to run at every login.
+set -uo pipefail
+
+if command -v plasma-apply-wallpaperimage >/dev/null 2>&1; then
+  plasma-apply-wallpaperimage /usr/share/wallpapers/safegamingos.png >/dev/null 2>&1 || true
+fi
+if command -v plasma-apply-colorscheme >/dev/null 2>&1; then
+  plasma-apply-colorscheme safegamingOS >/dev/null 2>&1 || true
+fi
+exit 0

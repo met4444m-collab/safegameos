@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# safegamingOS — forced installer (like Windows 10 setup): opens the graphical
+# installer automatically when the LIVE desktop appears. No-op on installed
+# systems (no /run/archiso). Runs from the live user's Plasma autostart.
+set -uo pipefail
+
+# live medium only
+[[ -d /run/archiso ]] || exit 0
+command -v sg-install-gui >/dev/null 2>&1 || exit 0
+
+# don't stack multiple instances (user may have opened it from the icon)
+pgrep -f '^sg-install-gui' >/dev/null 2>&1 && exit 0
+
+# give Plasma a few seconds to settle, then open the installer
+sleep 6
+pgrep -f '^sg-install-gui' >/dev/null 2>&1 && exit 0
+
+exec sg-install-gui
