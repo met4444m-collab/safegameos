@@ -4,7 +4,9 @@
 # Usage:
 #   sudo sg-room-run NAME -- APP [АРГУМЕНТЫ...]
 #   sudo sg-room-run --game NAME -- APP [АРГУМЕНТЫ...]     игровая комната
-#   sudo sg-room-run --offline NAME -- APP [АРГУМЕНТЫ...]  без сети
+#   sudo sg-room-run --net NAME -- APP [АРГУМЕНТЫ...]      принудительно с сетью
+#   sudo sg-room-run --offline NAME -- APP [АРГУМЕНТЫ...]  без сети (по умолчанию так,
+#                                                          если сеть не включена для комнаты: sg-net ROOM on)
 #   sudo sg-room-run --x11-isolate NAME -- APP [АРГУМЕНТЫ...]  отдельный дисплей (Xephyr)
 #   --x11-isolate: приложение работает в собственном виртуальном дисплее и
 #   физически не видит экран/клавиатуру хоста (для X11-сессий; в Wayland не нужно)
@@ -28,6 +30,7 @@ mem_set=0
 cpu_set=0
 game=0
 offline=0
+net_flag=0
 x11iso=0
 
 while [[ $# -gt 0 ]]; do
@@ -36,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --mem)    mem="${2:?--mem требует значение}"; mem_set=1; shift 2 ;;
     --cpu)    cpu="${2:?--cpu требует значение}"; cpu_set=1; shift 2 ;;
     --game)   game=1; shift ;;
+    --net)     net_flag=1; shift ;;
     --offline) offline=1; shift ;;
     --x11-isolate) x11iso=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -55,8 +59,8 @@ slug="$(slugify "${name}")"
 [[ -n "${slug}" ]] || { echo "error: пустое имя комнаты" >&2; exit 1; }
 
 sg_ensure_db
-user="$(real_user)"
-[[ -n "${user}" && "${user}" != "root" ]] || { echo "error: не удалось определить пользователя" >&2; exit 1; }
+session_user="$(real_user)"
+[[ -n "${session_user}" && "${session_user}" != "root" ]] || { echo "error: не удалось определить пользователя" >&2; exit 1; }
 
 # --- лимиты ресурсов (по умолчанию игровые комнаты получают больше) ---
 if [[ ${game} -eq 1 ]]; then
@@ -76,7 +80,20 @@ if ! sg_room_exists "${slug}"; then
      VALUES('$(sg_esc "${slug}")','$(sg_esc "${name}")','$(sg_esc "${type}")','running','$(sg_esc "${mem}")','$(sg_esc "${cpu}")','$(sg_esc "${app}")',$(sg_now));"
 else
   sqlite3 "${SG_DB}" "UPDATE rooms SET app='$(sg_esc "${app}")', mem='$(sg_esc "${mem}")', cpu='$(sg_esc "${cpu}")' WHERE id='$(sg_esc "${slug}")';"
+  # тип комнаты берём из базы — политика сети и UID привязаны к нему
+  db_type="$(sqlite3 "${SG_DB}" "SELECT type FROM rooms WHERE id='$(sg_esc "${slug}")';" 2>/dev/null)"
+  [[ -n "${db_type}" ]] && type="${db_type}"
 fi
+
+# --- per-room UID: обычные комнаты получают собственного системного
+#     пользователя (sgroom-<slug>) — чужие /proc, /dev/shm, сокеты сессии
+#     и файлы других UID для них закрыты ядром. Комнаты с доступом к
+#     сессии (browser/games/streaming) работают от пользователя сессии:
+#     им нужны PipeWire-сокет и экран (осознанный трейдофф продукта).
+#     Тип берём из базы (или из CLI для новой комнаты) — иначе комната
+#     browser, запущенная без --type, потеряла бы звук. ---
+user="$(sg_room_user "${slug}" "${type}")"
+sg_ensure_room_user "${user}" "$(sg_room_home "${slug}")" || exit 1
 
 # --- домашний каталог комнаты (изолирован через --private) ---
 home="$(sg_room_home "${slug}")"
@@ -95,6 +112,18 @@ fj=(firejail --name="${slug}" --hostname="${slug}" --private="${home}"
 # --- жёсткие опции (страховка от старых версий firejail) ---
 fj_supports ipc-namespace && fj+=(--ipc-namespace)
 fj_supports machine-id    && fj+=(--machine-id)
+
+# --- AppArmor (MAC поверх firejail): процессы комнаты попадают под профиль
+#     firejail-default и остаются ограниченными, даже если firejail обойдён.
+#     Профиль наследуется всеми дочерними процессами комнаты.
+#     Флаг добавляем только если AppArmor реально загружен и профиль есть,
+#     иначе firejail отказался бы стартовать. ---
+if fj_supports apparmor \
+   && [[ -f /sys/module/apparmor/parameters/enabled ]] \
+   && grep -qi y /sys/module/apparmor/parameters/enabled \
+   && grep -q "firejail-default" /sys/kernel/security/apparmor/profiles 2>/dev/null; then
+  fj+=(--apparmor)
+fi
 
 # --- setuid-инструменты администрирования внутри комнаты = лестница наружу.
 #     Комнате они не нужны: админ-команды запускаются снаружи (pkexec/sudo). ---
@@ -145,7 +174,16 @@ if [[ ${x11iso} -eq 1 ]]; then
   fi
 fi
 
+# --- сеть: по умолчанию только комнаты, которым она нужна из коробки
+#     (browser/games/streaming). Остальные стартуют с --net=none — вирус не
+#     сможет отправить данные наружу. Политика комнаты: sg-net ROOM on|off;
+#     разовые переопределения: --net / --offline. ---
+net_perm="$(sg_net_get "${slug}" "${type}")"
 if [[ ${offline} -eq 1 ]]; then
+  fj+=(--net=none)
+elif [[ ${net_flag} -eq 1 ]]; then
+  :
+elif [[ "${net_perm}" == "0" ]]; then
   fj+=(--net=none)
 fi
 
@@ -156,8 +194,21 @@ if [[ ${game} -eq 1 ]]; then
 fi
 
 echo "==> запуск «${app}» в комнате «${slug}» (${home})"
+if [[ "${user}" != "${session_user}" ]]; then
+  echo "    UID:        ${user} (per-room UID — изоляция ядром)"
+else
+  echo "    UID:        ${user} (сессия — комната типа ${type})"
+fi
+if [[ "${fj[*]}" == *"--apparmor"* ]]; then
+  echo "    AppArmor:   профиль firejail-default (MAC)"
+fi
 [[ "${mem}" != "0" ]] && echo "    лимит RAM:  ${mem}  (cgroup, без swap)"
 [[ "${cpu}" != "0" ]] && echo "    лимит CPU:  ${cpu}%  (cgroup)"
+if [[ ${offline} -eq 1 || ( ${net_flag} -eq 0 && "${net_perm}" == "0" ) ]]; then
+  echo "    сеть:       ВЫКЛЮЧЕНА (данные наружу не уйдут)"
+else
+  echo "    сеть:       включена (выключить: sudo sg-net ${slug} off)"
+fi
 echo "    закрыть комнату: firejail --shutdown=${slug}    (или sudo sg-quarantine ${slug})"
 echo
 

@@ -111,6 +111,53 @@ sg_event() {
 
 sg_room_home() { echo "${SG_ROOT}/$1/home"; }
 
+sg_room_type() {
+  sqlite3 "${SG_DB}" "SELECT type FROM rooms WHERE id='$(sg_esc "$1")';" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# per-room UID (полная файловая/процессная изоляция)
+#
+# Типы комнат с доступом к сессии рабочего стола (звук/порталы/экран):
+# browser/games/streaming работают от имени пользователя сессии — это
+# осознанный продукт-трейдофф (им нужен PipeWire-сокет, сессионная шина и
+# экран). ВСЕ остальные комнаты получают собственного системного
+# пользователя sgroom-<slug>: чужие /proc, /dev/shm, сокеты /run/user и
+# файлы других UID для них физически закрыты ядром, а не чёрными списками.
+
+sg_session_types() { echo "browser games streaming"; }
+
+sg_room_user() {
+  local slug="$1" type="${2:-general}"
+  local st; st="$(sg_session_types)"
+  case " ${st} " in
+    *" ${type} "*) echo "$(real_user)" ;;
+    *) echo "sgroom-$(printf '%s' "${slug}" | cut -c1-24)" ;;
+  esac
+}
+
+sg_ensure_room_user() {
+  local user="$1" home="$2"
+  [[ -n "${user}" && "${user}" != "root" ]] || return 0
+  if ! id -u "${user}" >/dev/null 2>&1; then
+    if ! useradd --system --shell /usr/bin/bash --home-dir "${home}" \
+        --no-create-home --key USERGROUPS_ENAB=no "${user}" >/dev/null 2>&1; then
+      echo "error: не удалось создать пользователя комнаты «${user}» (имя занято?)" >&2
+      return 1
+    fi
+    sg_event "system" "Создан пользователь комнаты «${user}» (per-room UID)."
+  fi
+  return 0
+}
+
+sg_remove_room_user() {
+  local slug="$1"
+  local u="sgroom-$(printf '%s' "${slug}" | cut -c1-24)"
+  if id -u "${u}" >/dev/null 2>&1; then
+    userdel "${u}" >/dev/null 2>&1 || true
+  fi
+}
+
 sg_room_exists() {
   [[ -n "$(sqlite3 "${SG_DB}" "SELECT id FROM rooms WHERE id='$1';" 2>/dev/null)" ]]
 }
@@ -127,6 +174,14 @@ INSERT OR IGNORE INTO rooms(id,name,type,status,mem,cpu,app,created) VALUES
  ('browser','browser','browser','ready','4G','200','firefox',${now}),
  ('games','games','games','ready','8G','400','prismlauncher',${now}),
  ('streaming','streaming','streaming','ready','8G','400','obs',${now});
+SQL
+  # сеть «из коробки»: браузер/игры/стрим — с сетью (продукт требует интернет),
+  # все остальные комнаты по умолчанию запускаются БЕЗ сети.
+  sqlite3 "${SG_DB}" <<SQL
+INSERT OR IGNORE INTO permissions(room,kind,granted,time) VALUES
+ ('browser','net',1,${now}),
+ ('games','net',1,${now}),
+ ('streaming','net',1,${now});
 SQL
 }
 
@@ -175,7 +230,9 @@ sg_snapshot_restore() {
   rm -rf "${home}"
   mkdir -p "$(dirname "${home}")"
   tar --zstd -C "$(dirname "${home}")" -xf "${snap}"
-  chown -R "${user}:${user}" "${home}" 2>/dev/null || true
+  local ruser; ruser="$(sg_room_user "${slug}" "$(sg_room_type "${slug}")")"
+  sg_ensure_room_user "${ruser}" "${home}" >/dev/null 2>&1 || true
+  chown -R "${ruser}:${ruser}" "${home}" 2>/dev/null || true
   sqlite3 "${SG_DB}" \
     "UPDATE rooms SET status='running', quarantine_path=NULL WHERE id='${slug}';"
   sg_event "restore" "Комната «${slug}» откачена к снапшоту ${snap}."
@@ -236,7 +293,9 @@ sg_restore_room() {
     return 1
   fi
   mv "${qdir}" "$(sg_room_home "${slug}")"
-  chown -R "${user}:${user}" "$(sg_room_home "${slug}")"
+  local ruser; ruser="$(sg_room_user "${slug}" "$(sg_room_type "${slug}")")"
+  sg_ensure_room_user "${ruser}" "$(sg_room_home "${slug}")" >/dev/null 2>&1 || true
+  chown -R "${ruser}:${ruser}" "$(sg_room_home "${slug}")"
   sqlite3 "${SG_DB}" \
     "UPDATE rooms SET status='running', quarantine_path=NULL WHERE id='${slug}';"
   sg_event "clean" "Комната «${slug}» восстановлена из карантина."
@@ -249,6 +308,7 @@ sg_delete_room() {
   local home; home="$(sg_room_home "${slug}")"
   sg_room_running "${slug}" && firejail --shutdown="${slug}" >/dev/null 2>&1
   rm -rf "${home}" "${qdir}"
+  sg_remove_room_user "${slug}"
   sqlite3 "${SG_DB}" \
     "UPDATE rooms SET status='deleted', quarantine_path=NULL WHERE id='${slug}';"
   sqlite3 "${SG_DB}" "DELETE FROM permissions WHERE room='${slug}';"
@@ -295,6 +355,25 @@ sg_unblock_url() {
 }
 
 # ---------------------------------------------------------------------------
+# сеть комнаты: permission kind='net'; без сети комната не может ни скачать,
+# ни отправить данные наружу (вирус не «улетит» на сервер).
+# По умолчанию сеть есть только у комнат, которым она нужна из коробки.
+
+sg_net_default() {
+  case "${1:-general}" in
+    browser|games|streaming) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+
+sg_net_get() {
+  local slug="$1" type="${2:-general}"
+  local v; v="$(sg_permission_get "${slug}" net)"
+  [[ -n "${v}" ]] || v="$(sg_net_default "${type}")"
+  echo "${v}"
+}
+
+# ---------------------------------------------------------------------------
 # permissions (game mode = доступ к экрану/звуку/вводу сессии)
 
 sg_permission_set() {
@@ -327,4 +406,35 @@ sg_download_record() {
 sg_download_find() {
   local file="$1"
   sqlite3 "${SG_DB}" "SELECT room,source_url,status FROM downloads WHERE path='$(sg_esc "$(readlink -f "${file}" 2>/dev/null || echo "${file}")")' ORDER BY id DESC LIMIT 1;" 2>/dev/null
+}
+
+# Лучший-effort извлечение URL источника загрузки из профиля Firefox комнаты.
+# Firefox пишет историю загрузок в places.sqlite (moz_downloads.source)
+# асинхронно — ждём до TRIES попыток с паузой, чтобы застать запись.
+# Возвращает URL или пустую строку (тогда остаётся 'unknown').
+sg_track_auto_url() {
+  local slug="$1" filename="$2" tries="${3:-8}"
+  [[ -n "${filename}" && ${#filename} -ge 2 ]] || return 1
+  local home db url i
+  home="$(sg_room_home "${slug}")"
+  db="$(find "${home}/.mozilla/firefox" -maxdepth 2 -name 'places.sqlite' 2>/dev/null | head -n1)"
+  [[ -n "${db}" ]] || return 1
+  local fn_lc; fn_lc="$(printf '%s' "${filename}" | tr '[:upper:]' '[:lower:]')"
+  for ((i=0; i<tries; i++)); do
+    [[ ${i} -gt 0 ]] && sleep 3
+    url="$(sqlite3 -readonly -separator $'\t' "${db}" \
+      "SELECT d.source FROM moz_downloads d WHERE instr(lower(d.source), lower('$(sg_esc "${filename}")')) > 0 ORDER BY d.dateAdded DESC LIMIT 1;" 2>/dev/null)"
+    if [[ -n "${url}" ]]; then
+      printf '%s' "${url}"
+      return 0
+    fi
+    # Firefox переименовывает дубликаты: 'file (1).zip' — ищем без суффикса
+    local base; base="${filename%% *}"
+    if [[ -n "${base}" && ${#base} -ge 2 ]]; then
+      url="$(sqlite3 -readonly -separator $'\t' "${db}" \
+        "SELECT d.source FROM moz_downloads d WHERE instr(lower(d.source), lower('$(sg_esc "${base}")')) > 0 ORDER BY d.dateAdded DESC LIMIT 1;" 2>/dev/null)"
+      [[ -n "${url}" ]] && { printf '%s' "${url}"; return 0; }
+    fi
+  done
+  return 1
 }

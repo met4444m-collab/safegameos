@@ -76,7 +76,11 @@ def db_rooms():
         con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=3)
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            "SELECT id,name,type,status,mem,cpu,app,created FROM rooms ORDER BY created"
+            "SELECT r.id,r.name,r.type,r.status,r.mem,r.cpu,r.app,r.created,"
+            " COALESCE(p.granted, CASE WHEN r.type IN ('browser','games','streaming')"
+            " THEN 1 ELSE 0 END) AS net"
+            " FROM rooms r LEFT JOIN permissions p ON p.room=r.id AND p.kind='net'"
+            " ORDER BY r.created"
         ).fetchall()
         con.close()
         return [dict(r) for r in rows]
@@ -143,9 +147,9 @@ class RoomsTab(QWidget):
         self.hint.setObjectName("muted")
         head.addWidget(self.hint)
         lay.addLayout(head)
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["Имя", "Тип", "Статус", "RAM", "CPU", "Приложение", "Создана"])
+            ["Имя", "Тип", "Статус", "RAM", "CPU", "Сеть", "Изоляция", "Приложение", "Создана"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -156,6 +160,8 @@ class RoomsTab(QWidget):
             ("▶ Запустить приложение", self.run_app),
             ("🎮 Игровой режим вкл", lambda: self.game_mode(1)),
             ("🎮 Игровой режим выкл", lambda: self.game_mode(0)),
+            ("🌐 Сеть вкл", lambda: self.net_mode(1)),
+            ("🚫 Сеть выкл", lambda: self.net_mode(0)),
             ("🧪 Карантин", lambda: self.act("quarantine")),
             ("♻ Восстановить", lambda: self.act("restore")),
             ("🗑 Удалить", lambda: self.act("delete")),
@@ -183,7 +189,9 @@ class RoomsTab(QWidget):
         rooms = db_rooms()
         self.table.setRowCount(len(rooms))
         for i, r in enumerate(rooms):
-            vals = [r["name"], r["type"], r["status"], r["mem"], r["cpu"], r["app"], ""]
+            iso = "🛡 свой UID" if r["type"] not in ("browser", "games", "streaming") else "сессия"
+            vals = [r["name"], r["type"], r["status"], r["mem"], r["cpu"],
+                    "on" if r["net"] else "off", iso, r["app"], ""]
             for j, v in enumerate(vals):
                 self.table.setItem(i, j, QTableWidgetItem(str(v)))
             st = self.table.item(i, 2)
@@ -191,6 +199,10 @@ class RoomsTab(QWidget):
                 st.setForeground(QColor(RED))
             elif r["status"] == "running":
                 st.setForeground(QColor(GREEN))
+            net_it = self.table.item(i, 5)
+            net_it.setForeground(QColor(GREEN if r["net"] else MUTED))
+            iso_it = self.table.item(i, 6)
+            iso_it.setForeground(QColor(GREEN if "UID" in iso else MUTED))
         n = len(rooms)
         self.hint.setText(f"{n} комнат(ы)  ·  база: {DB}")
 
@@ -219,6 +231,13 @@ class RoomsTab(QWidget):
         slug = self.selected_slug()
         if slug:
             ok, out = run(pkexec(["sg-game-mode", slug, "on" if on else "off"]))
+            self.msg(ok, out)
+            self.refresh()
+
+    def net_mode(self, on):
+        slug = self.selected_slug()
+        if slug:
+            ok, out = run(pkexec(["sg-net", slug, "on" if on else "off"]))
             self.msg(ok, out)
             self.refresh()
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly safegamingOS SafeGuard room scan
+
+[Timer]
+OnCalendar=Mon *-*-* 03:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

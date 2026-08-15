@@ -16,7 +16,7 @@ ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 #     /usr/lib/os-release on Arch — write the real file there. ---
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.9.1"
+PRETTY_NAME="safegamingOS 0.9.3"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling
@@ -50,7 +50,7 @@ chown -R live:live /home/live/.config /home/live/Desktop 2>/dev/null || true
 echo ":: safegamingOS customize_airootfs: services"
 
 # --- services ---
-systemctl enable NetworkManager sddm sg-watch >/dev/null 2>&1 || true
+systemctl enable NetworkManager sddm sg-watch sg-track >/dev/null 2>&1 || true
 systemctl set-default graphical.target >/dev/null 2>&1 || true
 
 echo ":: safegamingOS customize_airootfs: plymouth theme"

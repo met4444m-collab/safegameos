@@ -1,0 +1,12 @@
+[Unit]
+Description=safegamingOS SafeGuard scheduled room scan (ClamAV)
+After=network.target clamav-freshclam.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sg-av scan-rooms
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

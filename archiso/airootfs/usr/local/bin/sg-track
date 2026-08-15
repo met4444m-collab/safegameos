@@ -6,7 +6,10 @@
 # Usage:
 #   sudo sg-track ФАЙЛ [--url URL] [--room ROOM] [--size N]
 #   sudo sg-track list [--room ROOM]
-#   sudo sg-track --watch КАТАЛОГ [--room ROOM]     следить за каталогом загрузок
+#   sudo sg-track --watch КАТАЛОГ [--room ROOM] [--auto-url]  следить за каталогом
+#       загрузок; --auto-url: извлекать URL источника из профиля Firefox
+#       комнаты (places.sqlite) — URL нужен SafeGuard для блокировки сайта,
+#       откуда пришёл вирус
 set -uo pipefail
 
 source /usr/local/lib/sg-rooms/lib.sh
@@ -48,19 +51,36 @@ list() {
 }
 
 watch() {
-  local dir="${1:-}" room="${2:-browser}"
+  local dir="${1:-}" room="browser" auto_url=0
+  shift || true
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --room)    room="${2:-browser}"; shift 2 ;;
+      --auto-url) auto_url=1; shift ;;
+      *) echo "error: лишний аргумент: $1" >&2; exit 1 ;;
+    esac
+  done
   [[ -d "${dir}" ]] || { echo "error: каталог не найден: ${dir}" >&2; exit 1; }
   if ! command -v inotifywait >/dev/null 2>&1; then
     echo "error: inotifywait не найден (sudo pacman -S inotify-tools)" >&2
     exit 1
   fi
   echo "==> слежу за ${dir} (комната: ${room}). Новые файлы записываются в журнал SafeGuard."
+  [[ ${auto_url} -eq 1 ]] && echo "    источник URL: авто (из профиля Firefox комнаты)"
   echo "    остановить: Ctrl+C"
-  inotifywait -m -e close_write --format '%w%f' "${dir}" | while read -r f; do
+  inotifywait -m -e close_write -e moved_to --format '%w%f' "${dir}" | while read -r f; do
     [[ -f "${f}" ]] || continue
     sg_ensure_db 2>/dev/null || true
     sg_download_record "${f}" "unknown" "${room}"
-    echo "✓ новая загрузка: $(basename "${f}") (комната: ${room})"
+    local url=""
+    if [[ ${auto_url} -eq 1 ]]; then
+      url="$(sg_track_auto_url "${room}" "$(basename "${f}")")"
+      if [[ -n "${url}" ]]; then
+        sqlite3 "${SG_DB}" \
+          "UPDATE downloads SET source_url='$(sg_esc "${url}")' WHERE path='$(sg_esc "$(readlink -f "${f}" 2>/dev/null || echo "${f}")")' AND source_url='unknown';"
+      fi
+    fi
+    echo "✓ новая загрузка: $(basename "${f}") (комната: ${room}, источник: ${url:-unknown})"
   done
 }
 
@@ -68,7 +88,7 @@ cmd="${1:-}"
 shift || true
 case "${cmd}" in
   list)    list "${1:-}" ;;
-  --watch) watch "${1:-}" "${2:-browser}" ;;
+  --watch) watch "$@" ;;
   -h|--help) usage; exit 0 ;;
   "")      usage >&2; exit 1 ;;
   *)       record "${cmd}" "$@" ;;

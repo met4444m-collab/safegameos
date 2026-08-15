@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# safegamingOS — включить/выключить сеть для комнаты.
+# Без сети комната не может ни скачивать, ни отправлять данные наружу —
+# вирус из такой комнаты физически не «улетит» на сервер. По умолчанию сеть
+# есть только у комнат browser/games/streaming (продукт требует интернет);
+# все остальные комнаты запускаются офлайн.
+#
+# Usage:
+#   sudo sg-net ROOM on|off
+#   sudo sg-net ROOM            # показать текущее состояние
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3
+
+room="${1:-}"
+action="${2:-}"
+[[ -n "${room}" ]] || { echo "usage: sg-net ROOM on|off" >&2; exit 1; }
+
+sg_ensure_db
+slug="$(slugify "${room}")"
+rtype="$(sqlite3 "${SG_DB}" "SELECT type FROM rooms WHERE id='$(sg_esc "${slug}")';" 2>/dev/null)"
+[[ -n "${rtype}" ]] || { echo "error: комната «${slug}» не найдена (см. sg-rooms)" >&2; exit 1; }
+
+case "${action}" in
+  on)
+    [[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-net ${room} on" >&2; exit 1; }
+    sg_permission_set "${slug}" net 1
+    sg_event "net" "Сеть включена для комнаты «${slug}»."
+    echo "✓ сеть ВКЛЮЧЕНА для «${slug}»."
+    ;;
+  off)
+    [[ $EUID -eq 0 ]] || { echo "error: запустите от root: sudo sg-net ${room} off" >&2; exit 1; }
+    sg_permission_set "${slug}" net 0
+    sg_event "net" "Сеть выключена для комнаты «${slug}» — данные наружу не уйдут."
+    echo "✓ сеть ВЫКЛЮЧЕНА для «${slug}»."
+    ;;
+  "")
+    case "$(sg_net_get "${slug}" "${rtype}")" in
+      1) echo "on" ;;
+      *) echo "off" ;;
+    esac
+    ;;
+  *)
+    echo "usage: sg-net ROOM on|off" >&2
+    exit 1
+    ;;
+esac
+exit 0

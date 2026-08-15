@@ -6,6 +6,13 @@
     },
     "NewTabPage": false,
     "DisableTelemetry": true,
-    "OfferToSaveLogins": false
+    "OfferToSaveLogins": false,
+    "DisableFirefoxAccounts": true,
+    "DisablePocket": true,
+    "BlockAboutConfig": true,
+    "DNSOverHTTPS": {
+      "Enabled": false,
+      "Locked": true
+    }
   }
 }

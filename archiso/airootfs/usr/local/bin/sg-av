@@ -23,6 +23,11 @@
 #       служба sg-watch; события — в журнал SafeGuard. По умолчанию только
 #       детектит и логирует; --auto-quarantine = карантин по решению системы
 #       (по ТЗ решение принимает пользователь — флаг по умолчанию выключен).
+#   sudo sg-av scan-rooms [--yes]
+#       Плановое сканирование всех активных комнат (ClamAV, еженедельно по
+#       расписанию: sg-av-scan.timer). При находке: блокирует источник-URL,
+#       пишет событие в журнал; решение о карантине остаётся за пользователем
+#       (--yes = авто-карантин заражённой комнаты).
 set -uo pipefail
 
 source /usr/local/lib/sg-rooms/lib.sh
@@ -117,6 +122,62 @@ scan() {
 
   sqlite3 "${SG_DB}" "UPDATE downloads SET status='clean' WHERE path='$(sg_esc "${real_path}")';"
   echo "✓ чисто: ${real_path}"
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
+# плановое сканирование всех комнат (еженедельный таймер sg-av-scan.timer)
+scan_rooms() {
+  local yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes)  yes=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "error: неизвестный флаг: $1" >&2; exit 1 ;;
+    esac
+  done
+  if ! command -v clamscan >/dev/null 2>&1; then
+    echo "!! ClamAV не установлен (sudo pacman -S clamav && sudo freshclam)" >&2
+    exit 2
+  fi
+  sg_ensure_db
+  local slug rtype home out line path virus row u
+  while IFS='|' read -r slug rtype; do
+    [[ -n "${slug}" ]] || continue
+    home="$(sg_room_home "${slug}")"
+    [[ -d "${home}" ]] || continue
+    echo "==> сканирование комнаты «${slug}» (${home})..."
+    out="$(clamscan -r --no-summary --max-filesize=25M --max-scansize=50M "${home}" 2>&1)"
+    if echo "${out}" | grep -qiE "LibClamAV|Can't open|ERROR"; then
+      echo "   ⚠ база сигнатур ClamAV, похоже, ещё не загружена (freshclam). Пропускаю."
+      continue
+    fi
+    local room_found=0
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] || continue
+      if [[ "${line}" =~ ^(.*):\ ([^:]+)\ FOUND$ ]]; then
+        path="${BASH_REMATCH[1]}"
+        virus="${BASH_REMATCH[2]}"
+        room_found=$((room_found + 1))
+        echo "   !!! ${virus} : ${path}"
+        sqlite3 "${SG_DB}" "UPDATE downloads SET status='infected' WHERE path='$(sg_esc "${path}")';"
+        # источник загрузки ищем по имени файла (сканируем приватный home комнаты)
+        row="$(sqlite3 -separator '|' "${SG_DB}" \
+          "SELECT room,source_url FROM downloads WHERE filename='$(sg_esc "$(basename "${path}")")' ORDER BY id DESC LIMIT 1;" 2>/dev/null)"
+        if [[ -n "${row}" ]]; then
+          u="${row#*|}"
+          [[ "${u}" == "unknown" ]] || sg_block_url "${u}" "${virus}"
+        fi
+        sg_event "virus" "Плановое сканирование: ${virus} в ${path} (комната: ${slug})."
+      fi
+    done <<< "${out}"
+    if [[ ${yes} -eq 1 && ${room_found} -gt 0 ]]; then
+      echo "==> авто-карантин комнаты «${slug}»..."
+      sg_quarantine_room "${slug}" "плановое сканирование: ${room_found} заражённых файлов"
+    fi
+  done < <(sqlite3 -separator '|' "${SG_DB}" \
+    "SELECT id,type FROM rooms WHERE status NOT IN ('quarantined','deleted');" 2>/dev/null)
+  echo "✓ плановое сканирование завершено."
   exit 0
 }
 
@@ -269,6 +330,7 @@ cmd="${1:-status}"
 shift || true
 case "${cmd}" in
   scan)       scan "$@" ;;
+  scan-rooms) scan_rooms "$@" ;;
   live)       live ;;
   watch)      watch "$@" ;;
   status|list) status "${1:-}" ;;

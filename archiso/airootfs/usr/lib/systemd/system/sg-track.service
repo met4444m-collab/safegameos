@@ -1,0 +1,12 @@
+[Unit]
+Description=safegamingOS SafeGuard auto download tracker (records source URLs for AV blocking)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sg-track-daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

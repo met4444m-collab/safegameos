@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# safegamingOS — авто-трекинг загрузок всех комнат (служба sg-track.service).
+#
+# Следит за каталогами Downloads каждой комнаты (inotify) и записывает
+# каждую новую загрузку в журнал SafeGuard вместе с источником (URL),
+# который извлекается из профиля Firefox комнаты (places.sqlite,
+# moz_downloads.source). URL нужен SafeGuard: при обнаружении вируса система
+# находит сайт, откуда он скачан, и блокирует его (разблокировать можно
+# вручную: sg-av unblock URL).
+#
+# Комнаты создаются динамически — демон периодически сканирует
+# /var/lib/sg-rooms/*/home/Downloads и поднимает по watcher'у на комнату.
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3 inotifywait
+
+MARKERS=/run/sg-track
+mkdir -p "${MARKERS}"
+
+spawn_watcher() {
+  local slug="$1" dir="$2"
+  local marker="${MARKERS}/${slug}.watch"
+  [[ -f "${marker}" ]] && return 0
+  : > "${marker}"
+  (
+    trap 'rm -f "${marker}"' EXIT
+    # shellcheck disable=SC2016
+    inotifywait -m -e close_write -e moved_to --format '%w%f' "${dir}" \
+      | while IFS= read -r f; do
+          [[ -f "${f}" ]] || continue
+          sg_ensure_db 2>/dev/null || true
+          sg_download_record "${f}" "unknown" "${slug}" >/dev/null 2>&1
+          local url=""
+          url="$(sg_track_auto_url "${slug}" "$(basename "${f}")")"
+          if [[ -n "${url}" ]]; then
+            sqlite3 "${SG_DB}" \
+              "UPDATE downloads SET source_url='$(sg_esc "${url}")' WHERE path='$(sg_esc "$(readlink -f "${f}" 2>/dev/null || echo "${f}")")' AND source_url='unknown';" 2>/dev/null || true
+          fi
+          sg_event "track" "Загрузка: $(basename "${f}") ← ${url:-unknown} (комната: ${slug}, авто)." 2>/dev/null || true
+        done
+  ) &
+}
+
+echo "== SafeGuard auto-track: слежу за загрузками всех комнат (sg-track.service)"
+while true; do
+  for home in "${SG_ROOT}"/*/home; do
+    [[ -d "${home}" ]] || continue
+    slug="$(basename "$(dirname "${home}")")"
+    [[ -n "${slug}" ]] || continue
+    dir="${home}/Downloads"
+    [[ -d "${dir}" ]] || continue
+    spawn_watcher "${slug}" "${dir}"
+  done
+  # комнаты удалены/в карантине — снимаем осиротевшие watcher'ы
+  for marker in "${MARKERS}"/*.watch; do
+    [[ -f "${marker}" ]] || continue
+    slug="$(basename "${marker}" .watch)"
+    [[ -d "${SG_ROOT}/${slug}/home/Downloads" ]] || rm -f "${marker}"
+  done
+  sleep 5
+done

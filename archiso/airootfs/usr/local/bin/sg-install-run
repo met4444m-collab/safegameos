@@ -85,7 +85,11 @@ for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streami
   cp "/usr/share/applications/$f" "$TARGET/etc/skel/Desktop/" 2>/dev/null || true
 done
 cp /etc/skel/.config/autostart/sg-wallpaper.desktop "$TARGET/etc/skel/.config/autostart/" 2>/dev/null || true
-cp /usr/lib/systemd/system/sg-watch.service "$TARGET/usr/lib/systemd/system/" 2>/dev/null || true
+cp /usr/lib/systemd/system/sg-watch.service \
+   /usr/lib/systemd/system/sg-av-scan.service \
+   /usr/lib/systemd/system/sg-av-scan.timer \
+   /usr/lib/systemd/system/sg-track.service \
+   "$TARGET/usr/lib/systemd/system/" 2>/dev/null || true
 chmod +x "$TARGET"/usr/local/bin/sg-* 2>/dev/null || true
 
 step 10 "Установка пакетов (10–25 минут, нужен интернет)..."
@@ -141,7 +145,7 @@ echo "\$HOSTNAME" > /etc/hostname
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.9.1"
+PRETTY_NAME="safegamingOS 0.9.3"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling
@@ -172,7 +176,7 @@ if [ -d /sys/firmware/efi ]; then
 else
   grub-install --target=i386-pc --recheck "\$DISK" >/dev/null 2>&1 || true
 fi
-sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"/' /etc/default/grub
+sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash apparmor=1 security=apparmor"/' /etc/default/grub
 grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
 
 # --- initramfs: plymouth-хук + тема ---
@@ -201,8 +205,9 @@ if [ -f /usr/local/lib/sg-rooms/lib.sh ]; then
   sg_ensure_db 2>/dev/null || true
   sg_default_rooms 2>/dev/null || true
 fi
-systemctl enable sddm NetworkManager sg-watch apparmor >/dev/null 2>&1 || true
-systemctl enable clamav-freshclam >/dev/null 2>&1 || true
+systemctl enable sddm NetworkManager sg-watch sg-track apparmor >/dev/null 2>&1 || true
+systemctl enable clamav-freshclam clamav-freshclam.timer >/dev/null 2>&1 || true
+systemctl enable sg-av-scan.timer >/dev/null 2>&1 || true
 if [ -f /etc/sysctl.d/99-safegamingos.conf ]; then
   sysctl --system >/dev/null 2>&1 || true
 fi
