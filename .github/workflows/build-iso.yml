@@ -22,6 +22,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prune old ISO artifacts (keep newest 2 — frees storage quota)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # public repos get ~5GB Actions artifact storage; a single ISO is ~1.3GB
+          # compressed, so old builds exhaust the quota and the upload starts
+          # failing (0.9.6 hit this). Delete all but the 2 newest artifacts.
+          page=1
+          while :; do
+            list=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?per_page=100&page=$page") || break
+            n=$(printf '%s' "$list" | grep -c '"id"' || true)
+            ids=$(printf '%s' "$list" | grep '"id"' | sed 's/[^0-9]//g' | sort -rn | tail -n +3)
+            for id in $ids; do
+              echo ":: deleting old artifact $id"
+              curl -fsS -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$id" >/dev/null || true
+            done
+            [ "${n:-0}" -lt 100 ] && break
+            page=$((page+1))
+          done
+
       - name: Install archiso
         run: |
           pacman -Syu --noconfirm
