@@ -30,7 +30,7 @@ jobs:
       - name: Install archiso
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed archiso jq gh
+          pacman -S --noconfirm --needed archiso jq github-cli
 
       # public repos get ~5GB Actions artifact storage; since v0.10.0 the ISO
       # bundles the full offline install package set (/opt/sg-offline) and is
