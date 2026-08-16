@@ -70,6 +70,8 @@ scan() {
   fi
   [[ -n "${room}" ]] || room="unknown"
   [[ -n "${url}" ]] || url="unknown"
+  # комната идёт в карантин/удаление и в SQL — нормализуем в slug
+  [[ "${room}" == "unknown" ]] || room="$(slugify "${room}")"
 
   echo "==> Сканирование: ${real_path}"
   echo "    комната:  ${room}"

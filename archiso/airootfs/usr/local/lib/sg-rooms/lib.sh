@@ -127,12 +127,25 @@ sg_room_type() {
 
 sg_session_types() { echo "browser games streaming"; }
 
+# Имя системного пользователя комнаты — УНИКАЛЬНО для полного slug.
+# Раньше имя усекалось до 24 символов: две комнаты с общим префиксом из
+# 24 символов получали ОДНОГО пользователя, и изоляция ядром между ними
+# молча исчезала (общий /proc, чужие файлы открыты по UID, hidepid=2 не
+# разделяет). Теперь: sgroom-<первые 12 символов slug>-<8 hex md5(slug)> —
+# коллизия практически невозможна, длина 28 <= 32 (лимит имён пользователей).
+sgroom_username() {
+  local slug="$1" head hash
+  head="$(printf '%s' "${slug}" | cut -c1-12)"
+  hash="$(printf '%s' "${slug}" | md5sum | cut -c1-8)"
+  printf 'sgroom-%s-%s' "${head}" "${hash}"
+}
+
 sg_room_user() {
   local slug="$1" type="${2:-general}"
   local st; st="$(sg_session_types)"
   case " ${st} " in
     *" ${type} "*) echo "$(real_user)" ;;
-    *) echo "sgroom-$(printf '%s' "${slug}" | cut -c1-24)" ;;
+    *) sgroom_username "${slug}" ;;
   esac
 }
 
@@ -152,7 +165,7 @@ sg_ensure_room_user() {
 
 sg_remove_room_user() {
   local slug="$1"
-  local u="sgroom-$(printf '%s' "${slug}" | cut -c1-24)"
+  local u; u="$(sgroom_username "${slug}")"
   if id -u "${u}" >/dev/null 2>&1; then
     userdel "${u}" >/dev/null 2>&1 || true
   fi
@@ -224,7 +237,7 @@ sg_snapshot_restore() {
   [[ -n "${snap}" && -f "${snap}" ]] || { echo "error: снапшот не найден" >&2; return 1; }
   local home; home="$(sg_room_home "${slug}")"
   sg_room_running "${slug}" && firejail --shutdown="${slug}" >/dev/null 2>&1
-  pkill -f -- "--name=${slug}" >/dev/null 2>&1 || true
+  pkill -f -- "--name=${slug} " >/dev/null 2>&1 || true
   sleep 1
   local user; user="$(real_user)"
   rm -rf "${home}"
@@ -234,7 +247,7 @@ sg_snapshot_restore() {
   sg_ensure_room_user "${ruser}" "${home}" >/dev/null 2>&1 || true
   chown -R "${ruser}:${ruser}" "${home}" 2>/dev/null || true
   sqlite3 "${SG_DB}" \
-    "UPDATE rooms SET status='running', quarantine_path=NULL WHERE id='${slug}';"
+    "UPDATE rooms SET status='running', quarantine_path=NULL WHERE id='$(sg_esc "${slug}")';"
   sg_event "restore" "Комната «${slug}» откачена к снапшоту ${snap}."
   echo "✓ комната «${slug}» откачена к ${snap}"
 }
@@ -260,8 +273,12 @@ sg_snapshot_auto() {
 # ---------------------------------------------------------------------------
 # quarantine
 
+# Точное совпадение имени песочницы: в cmdline имя всегда стоит как
+# "--name=<slug> " (дальше идёт следующий аргумент). Раньше префиксное
+# совпадение ("--name=a" ловило и "--name=a-b") позволяло карантину
+# комнаты «a» убивать процессы комнаты «a-b» — межкомнатный DoS.
 sg_room_running() {
-  firejail --list 2>/dev/null | grep -q "name:$1\b"
+  firejail --list 2>/dev/null | grep -qE -- "name:${1}[[:space:]]"
 }
 
 # Вымести остатки комнаты с хостовых разделяемых каталогов (страховка к тому,
@@ -294,7 +311,7 @@ sg_quarantine_room() {
   # страховка перед карантином: снапшот, чтобы откат был возможен
   sg_snapshot_create "${slug}" "pre-quarantine" >/dev/null 2>&1 || true
   sg_room_running "${slug}" && firejail --shutdown="${slug}" >/dev/null 2>&1
-  pkill -f -- "--name=${slug}" >/dev/null 2>&1 || true
+  pkill -f -- "--name=${slug} " >/dev/null 2>&1 || true
   sleep 1
   sg_cleanup_room_artifacts "${slug}"
   if [[ -d "${home}" ]]; then
@@ -303,14 +320,14 @@ sg_quarantine_room() {
     chown -R root:root "${qdir}"
   fi
   sqlite3 "${SG_DB}" \
-    "UPDATE rooms SET status='quarantined', quarantine_path='${qdir}' WHERE id='${slug}';"
+    "UPDATE rooms SET status='quarantined', quarantine_path='$(sg_esc "${qdir}")' WHERE id='$(sg_esc "${slug}")';"
   sg_event "quarantine" "Комната «${slug}» помещена в карантин: ${why}. Процессы остановлены, данные запечатаны."
   echo "✓ комната «${slug}» в карантине (${qdir})"
 }
 
 sg_restore_room() {
   local slug="$1"
-  local qdir; qdir="$(sqlite3 "${SG_DB}" "SELECT quarantine_path FROM rooms WHERE id='${slug}';")"
+  local qdir; qdir="$(sqlite3 "${SG_DB}" "SELECT quarantine_path FROM rooms WHERE id='$(sg_esc "${slug}")';")"
   local user; user="$(real_user)"
   if [[ -z "${qdir}" || ! -d "${qdir}" ]]; then
     echo "error: нет карантинной копии для «${slug}»" >&2
@@ -321,23 +338,24 @@ sg_restore_room() {
   sg_ensure_room_user "${ruser}" "$(sg_room_home "${slug}")" >/dev/null 2>&1 || true
   chown -R "${ruser}:${ruser}" "$(sg_room_home "${slug}")"
   sqlite3 "${SG_DB}" \
-    "UPDATE rooms SET status='running', quarantine_path=NULL WHERE id='${slug}';"
+    "UPDATE rooms SET status='running', quarantine_path=NULL WHERE id='$(sg_esc "${slug}")';"
   sg_event "clean" "Комната «${slug}» восстановлена из карантина."
   echo "✓ комната «${slug}» восстановлена"
 }
 
 sg_delete_room() {
   local slug="$1"
-  local qdir; qdir="$(sqlite3 "${SG_DB}" "SELECT quarantine_path FROM rooms WHERE id='${slug}';")"
+  local qdir; qdir="$(sqlite3 "${SG_DB}" "SELECT quarantine_path FROM rooms WHERE id='$(sg_esc "${slug}")';")"
   local home; home="$(sg_room_home "${slug}")"
   sg_room_running "${slug}" && firejail --shutdown="${slug}" >/dev/null 2>&1
+  pkill -f -- "--name=${slug} " >/dev/null 2>&1 || true
   sleep 1
   sg_cleanup_room_artifacts "${slug}"
   rm -rf "${home}" "${qdir}"
   sg_remove_room_user "${slug}"
   sqlite3 "${SG_DB}" \
-    "UPDATE rooms SET status='deleted', quarantine_path=NULL WHERE id='${slug}';"
-  sqlite3 "${SG_DB}" "DELETE FROM permissions WHERE room='${slug}';"
+    "UPDATE rooms SET status='deleted', quarantine_path=NULL WHERE id='$(sg_esc "${slug}")';"
+  sqlite3 "${SG_DB}" "DELETE FROM permissions WHERE room='$(sg_esc "${slug}")';"
   sg_event "system" "Комната «${slug}» удалена безвозвратно."
   echo "✓ комната «${slug}» удалена"
 }
@@ -345,20 +363,31 @@ sg_delete_room() {
 # ---------------------------------------------------------------------------
 # URL blocking (hosts file)
 
+# Извлечь хост из URL и СТРОГО проверить его. Хост попадает в /etc/hosts,
+# поэтому без валидации URL с сайта злоумышленника (источник загрузки,
+# записанный sg-track и блокируемый антивирусом!) мог содержать перевод
+# строки/пробелы и дописать ПРОИЗВОЛЬНЫЕ строки в hosts при блокировке:
+# перенаправление любого домена на IP атакующего (фишинг/MITM) или DoS
+# блокировкой любых сайтов. Теперь: только [a-z0-9.-], без пробелов и
+# переводов строк; при недопустимом хосте возвращает 1 (блокировка
+# отклоняется, в hosts ничего не пишется).
 url_host() {
-  local url="$1"
+  local url="$1" host
   url="${url#*://}"
   url="${url%%/*}"
-  echo "${url}"
+  host="$(printf '%s' "${url}" | tr '[:upper:]' '[:lower:]' | sed 's/\.$//')"
+  [[ -n "${host}" ]] || return 1
+  [[ "${host}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
+  printf '%s' "${host}"
 }
 
 sg_block_url() {
   local url="$1" virus="${2:-unknown}"
-  local host; host="$(url_host "${url}")"
-  if [[ -z "${host}" ]]; then
-    echo "error: не удалось извлечь хост из '${url}'" >&2
+  local host
+  host="$(url_host "${url}")" || {
+    echo "error: недопустимый хост в URL '${url}' — блокировка отклонена" >&2
     return 1
-  fi
+  }
   if grep -qE "^0\.0\.0\.0[[:space:]]+${host}([[:space:]]|$)" /etc/hosts; then
     echo "ℹ ${host} уже заблокирован"
     return 0
@@ -372,7 +401,11 @@ sg_block_url() {
 
 sg_unblock_url() {
   local url="$1"
-  local host; host="$(url_host "${url}")"
+  local host
+  host="$(url_host "${url}")" || {
+    echo "error: недопустимый хост в URL '${url}'" >&2
+    return 1
+  }
   sed -i "/# safegamingOS block$/d; /^0\.0\.0\.0[[:space:]]\+${host}[[:space:]]/d" /etc/hosts
   sqlite3 "${SG_DB}" \
     "UPDATE blocked SET unblocked=1 WHERE url='$(sg_esc "${url}")';"

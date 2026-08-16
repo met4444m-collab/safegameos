@@ -118,7 +118,12 @@ fj=(firejail --name="${slug}" --hostname="${slug}" --private="${home}"
 
 # --- жёсткие опции (страховка от старых версий firejail) ---
 fj_supports ipc-namespace && fj+=(--ipc-namespace)
-fj_supports machine-id    && fj+=(--machine-id)
+# --machine-id ломает звук (см. man firejail) — даём его только комнатам
+# с per-room UID (им звук не нужен). Session-комнатам (browser/games/
+# streaming) звук нужен — machine-id им не добавляем.
+if fj_supports machine-id && [[ "${user}" != "${session_user}" ]]; then
+  fj+=(--machine-id)
+fi
 
 # --- AppArmor (MAC поверх firejail): процессы комнаты попадают под профиль
 #     firejail-default и остаются ограниченными, даже если firejail обойдён.

@@ -115,7 +115,7 @@
   <header>
     <div class="logo">SAFEGAMING<span style="color:var(--accent-2)">OS</span></div>
     <div class="tag">Qubes-подобная изоляция «комнат» на Arch Linux — для игр и стримов, без тяжёлых VM</div>
-    <div class="badge">archiso build project · v0.9.0 · не веб-приложение</div>
+    <div class="badge">archiso build project · v0.9.7 · не веб-приложение</div>
 
     <div class="bootbox">
       <div class="bootlabel">превью загрузочной анимации (DVD-стиль)</div>
@@ -131,33 +131,35 @@
     чтобы даже на слабом ПК хватало ресурсов для игр, OBS и стримов.
   </p>
 
-  <h2>Возможности (дорожная карта)</h2>
+  <h2>Возможности</h2>
   <div class="grid">
-    <div class="card"><h3>Изоляция комнат без VM</h3><p>Комнаты на уровне ОС (namespace/cgroups-подходы, sandbox-профили), минимум потерь ОЗУ и CPU. Вирус из комнаты физически не выходит за её границы.</p></div>
-    <div class="card"><h3>Антивирус с источником загрузки</h3><p>Система запоминает, с какой ссылки скачан файл в браузере. При обнаружении вируса комната предлагает: удалить вирус или удалить комнату целиком — и блокирует источник. Пользователь может разблокировать ссылку вручную.</p></div>
+    <div class="card"><h3>Изоляция комнат без VM</h3><p>Комнаты на уровне ОС: firejail (namespace + seccomp + no_new_privs + caps.drop), per-room UID (ядро разделяет /proc, /dev/shm и файлы), AppArmor-профиль поверх. Вирус из комнаты физически не выходит за её границы.</p></div>
+    <div class="card"><h3>Антивирус с источником загрузки</h3><p>SafeGuard запоминает, с какой ссылки скачан файл в браузере (автоматически). При обнаружении вируса комната предлагает: удалить вирус, карантин или удалить комнату — и блокирует источник системно. Пользователь может разблокировать ссылку вручную.</p></div>
     <div class="card"><h3>Игровые комнаты</h3><p>У обычной комнаты нет доступа к чужому экрану, клавиатуре и звуку. В игровой комнате (например, для OBS) можно явно разрешить захват экрана, звука и ввода из других комнат.</p></div>
     <div class="card"><h3>Windows-приложения</h3><p>Minecraft, Roblox, OBS Studio. В инсталляторе выбор: Wine или Proton (для игр). Swapfile до 16 ГБ для требовательных игр и ИИ.</p></div>
-    <div class="card"><h3>Рабочий стол</h3><p>KDE Plasma 6 с нестандартным, узнаваемым оформлением safegamingOS.</p></div>
+    <div class="card"><h3>Рабочий стол</h3><p>KDE Plasma 6 (Wayland по умолчанию — экран и ввод изолированы порталами) с нестандартным, узнаваемым оформлением safegamingOS.</p></div>
     <div class="card"><h3>Железо</h3><p>Автоподбор лучших драйверов (Intel GPU на ноутбуках): система сама проверяет и ставит подходящие.</p></div>
   </div>
 
-  <h2>MVP (первая версия ISO)</h2>
+  <h2>Реализовано (v0.9.x)</h2>
   <ul>
     <li>✅ Загрузка со стилем «DVD-логотип» — plymouth-тема safegamingos (отскакивает от краёв экрана)</li>
     <li>✅ Рабочий стол KDE Plasma после загрузки (live: пользователь <code>live</code>)</li>
-    <li>✅ Инсталлятор на диск — <code>sudo sg-install</code> (архитектура + swapfile 16 ГБ + брендирование)</li>
-    <li>⏳ Лёгкий антивирус SafeGuard — есть ядро (БД, карантин, блокировка URL), скрипты комнат — в разработке</li>
+    <li>✅ Инсталлятор на диск — графический мастер «как в Windows 10» (выбор диска, форматирование, учётная запись, swap 16 ГБ, Wine/Steam по желанию)</li>
+    <li>✅ Комнаты изоляции: <code>sg-room-run</code>, лимиты CPU/RAM (cgroup), сеть per-room, снапшоты, карантин, SafeGuard GUI</li>
+    <li>✅ Антивирус SafeGuard: ClamAV-скан, поведенческий сторож (майнер/fork-бомба), авто-трекинг источников загрузок, блокировка URL в /etc/hosts</li>
+    <li>✅ Per-room UID + AppArmor + Wayland + host-файрвол nftables + hardened sysctl (0.9.3–0.9.5)</li>
   </ul>
-  <p class="muted">Дальше — из прототипа в продукт: комнаты, игровой режим, антивирусный сканер, блокировка источников загрузки.</p>
+  <p class="muted">Дальше — из прототипа в продукт: пер-комнатный файрвол по хостам, изоляция звука, Wine/Proton-комнаты.</p>
 
   <h2>Статус репозитория</h2>
   <div class="status"><span class="dot"></span> <code>archiso/</code> — полный профиль: packages, syslinux + systemd-boot (UEFI), airootfs, mkinitcpio</div>
-  <div class="status"><span class="dot"></span> Загрузочная анимация «DVD-логотип» — plymouth-тема <code>safegamingos</code> (отскакивает от краёв, меняет цвет)</div>
+  <div class="status"><span class="dot"></span> Загрузочная анимация «DVD-логотип» — plymouth-тема <code>safegamingos</code></div>
   <div class="status"><span class="dot"></span> Live-окружение: автовход в KDE Plasma (пользователь <code>live</code>)</div>
-  <div class="status"><span class="dot"></span> Инсталлятор на диск: <code>sudo sg-install</code> (archinstall + swapfile 16 ГБ + брендирование)</div>
-  <div class="status"><span class="dot"></span> <code>sg-rooms/lib.sh</code> — ядро комнат/SafeGuard (БД, карантин, блокировка URL)</div>
-  <div class="status"><span class="dot pending"></span> Скрипты <code>sg-rooms</code>, <code>sg-room-run</code>, <code>sg-game-mode</code>, <code>sg-av</code>, <code>sg-track</code> — следующий этап</div>
-  <div class="status"><span class="dot pending"></span> Сборка ISO ещё не протестирована на реальном Arch Linux — тестовый прогон впереди</div>
+  <div class="status"><span class="dot"></span> Инсталлятор на диск: <code>sg-install</code> (GUI-мастер + root-помощник без archinstall)</div>
+  <div class="status"><span class="dot"></span> <code>sg-rooms</code>/<code>sg-room-run</code>/<code>sg-game-mode</code>/<code>sg-av</code>/<code>sg-track</code>/<code>sg-net</code> — комнаты, SafeGuard, сеть per-room</div>
+  <div class="status"><span class="dot"></span> Per-room UID, AppArmor, Wayland, nftables, hardened sysctl, hidepid — v0.9.3–0.9.5</div>
+  <div class="status"><span class="dot"></span> ISO собирается в GitHub Actions (артефакт <code>safegamingos-iso</code>) и тестируется в VM</div>
 
   <h2>Сборка ISO (у себя, на Arch Linux)</h2>
   <pre><span class="c"># 1. установить archiso</span>
@@ -167,11 +169,11 @@ sudo pacman -S archiso
 sudo ./build_iso.sh
 
 <span class="c"># 3. записать на флешку / в VM</span>
-sudo dd bs=4M if=out/safegamingos-0.9.0-x86_64.iso of=/dev/sdX status=progress oflag=sync</pre>
+sudo dd bs=4M if=out/safegamingos-0.9.7-x86_64.iso of=/dev/sdX status=progress oflag=sync</pre>
   <p class="muted">Сборка выполняется на вашей Arch-машине (или в Arch-контейнере) — не в браузере. Этот превью-экран просто показывает статус и документацию проекта.</p>
 </div>
 
-<footer>safegamingOS v0.9.0 · safegameos · build: archiso (mkarchiso)</footer>
+<footer>safegamingOS v0.9.7 · safegameos · build: archiso (mkarchiso)</footer>
 
 <script>
   // DVD-style boot animation preview (bouncing logo)
