@@ -32,7 +32,7 @@ jobs:
       # failing (0.9.6 hit this). The official delete-artifact action removes
       # every previous safegamingos-iso artifact by name, keeping exactly one.
       - name: Prune old ISO artifacts (frees storage quota)
-        uses: actions/delete-artifact@v4
+        uses: geekyeggo/delete-artifact@v5
         with:
           name: safegamingos-iso
           failOnError: false
