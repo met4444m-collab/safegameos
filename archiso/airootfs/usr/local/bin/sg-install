@@ -26,7 +26,7 @@ trap 'rm -f "$TMPCONF"' EXIT
 banner() {
   clear
   echo "=============================================="
-  echo "  safegamingOS 0.9.5 — установка на диск"
+  echo "  safegamingOS 0.9.6 — установка на диск"
   echo "=============================================="
   echo
 }

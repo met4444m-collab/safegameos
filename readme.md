@@ -4,7 +4,7 @@
 
 Live-система брендирована: DVD-логотип при загрузке, обои и тема KDE, фирменный терминал, стартовая страница Firefox. Инсталлятор открывается автоматически при загрузке live-образа (как в Windows 10) — установка без единой команды: выбор диска, форматирование, учётная запись, подкачка 16 ГБ, Wine/Steam по желанию.
 
-## Что уже есть (база v0.9.5)
+## Что уже есть (база v0.9.6)
 
 - **Собирается в загрузочный ISO** через `mkarchiso` (BIOS syslinux + UEFI systemd-boot).
 - **Загрузка со стилем DVD-логотипа** — plymouth-тема: слово `SAFEGAMINGOS` отскакивает от краёв экрана и меняет цвет (как DVD-логотип).
@@ -32,6 +32,7 @@ Live-система брендирована: DVD-логотип при загр
   - **Seccomp + no_new_privs (v0.9.5)**: фильтр комнат блокирует `ptrace, process_vm_readv, process_vm_writev` (same-UID чтение памяти между session-комнатами), `--nonewprivs` отключает setuid-лестницу внутри песочницы (даже `/usr/bin/passwd` не даст root).
   - **/proc hidepid (v0.9.5, установленная ОС)**: `/proc` монтируется с `hidepid=2` — процесс видит только свои процессы; session-комнаты не видят процессы хоста.
   - **Ядро, батч 2 (v0.9.5)**: `perf_event_paranoid=3`, `unprivileged_bpf_disabled=1`, `userfaultfd=0`, `fs.protected_{fifos,regular}=2`, `protected_{hardlinks,symlinks}=1`, `suid_dumpable=0`, `kexec_load_disabled=1`, `rp_filter`, `tcp_syncookies`, запрет IP-редиректов/source-route.
+  - **Межкомнатные сокеты/кеш (v0.9.6)**: приватный `--private` home + `--private-tmp` закрыли атаки «общий ~/.cache / ~/.config» и «X11-сокет через /tmp» (волна красной команды — CONTAINED). В чёрный список комнат добавлены сетевые эксфил-инструменты: `nc`/`ncat`/`socat`/`telnet`/`nmap` (если их доустановят — внутри комнат они останутся недоступны). Задокументирован остаточный вектор доверенных (игровых) комнат: D-Bus-активация на хосте (`xdg-open`/`StartServiceByName`) — требует клика пользователя, даёт права пользователя сессии, не root.
   - `sg-block-url` / `sg-unblock-url` — блокировка источника в `/etc/hosts` (разблокировка — решение пользователя). DoH принудительно выключен политикой Firefox (`DNSOverHTTPS: false, Locked`), иначе заблокированные сайты резолвились бы через шифрованный DNS мимо `/etc/hosts`.
   - `sg-quarantine` / `sg-rooms` / `sg-setup` — карантин и восстановление комнат, список комнат, первичная настройка SafeGuard.
   - Всё логируется в SQLite-базу `/var/lib/sg-rooms/sg.db` и `/var/log/sg-rooms/events.log`.
@@ -40,13 +41,13 @@ Live-система брендирована: DVD-логотип при загр
 
 ```bash
 sudo pacman -S archiso
-sudo ./build_iso.sh          # → out/safegamingos-0.9.5-x86_64.iso
+sudo ./build_iso.sh          # → out/safegamingos-0.9.6-x86_64.iso
 ```
 
 Запись на флешку:
 
 ```bash
-sudo dd bs=4M if=out/safegamingos-0.9.5-x86_64.iso of=/dev/sdX status=progress oflag=sync
+sudo dd bs=4M if=out/safegamingos-0.9.6-x86_64.iso of=/dev/sdX status=progress oflag=sync
 ```
 
 ## Тест (сначала в виртуалке)
@@ -57,7 +58,7 @@ sudo dd bs=4M if=out/safegamingos-0.9.5-x86_64.iso of=/dev/sdX status=progress o
    # QEMU (пакеты qemu-desktop edk2-ovmf)
    qemu-system-x86_64 -enable-kvm -m 4096 -cpu host -smp 4 \
      -drive file=test.qcow2,if=virtio,format=qcow2 \
-     -cdrom out/safegamingos-0.9.5-x86_64.iso -boot d
+     -cdrom out/safegamingos-0.9.6-x86_64.iso -boot d
    ```
 
 2. Дождитесь рабочего стола (автовход `live`).

@@ -142,6 +142,14 @@ fj+=(--blacklist=/usr/bin/sudo --blacklist=/usr/bin/pkexec
 fj+=(--blacklist=/usr/bin/strace --blacklist=/usr/bin/ltrace
      --blacklist=/usr/bin/gdb --blacklist=/usr/bin/gdbserver)
 
+# --- сетевые эксфил/развед-инструменты: сейчас их нет в системе, но если
+#     пользователь доустановит (netcat/nmap/...), внутри комнат они должны
+#     остаться недоступны — никаких обратных шеллов и сканеров (защита
+#     вглубь поверх сетевой политики комнат). ---
+fj+=(--blacklist=/usr/bin/nc --blacklist=/usr/bin/ncat
+     --blacklist=/usr/bin/socat --blacklist=/usr/bin/telnet
+     --blacklist=/usr/bin/nmap)
+
 # --- сам firejail внутри комнаты: нельзя запустить вложенный jail или
 #     --join в другую комнату (двойной jail = обход имени песочницы). ---
 fj+=(--blacklist=/usr/bin/firejail)

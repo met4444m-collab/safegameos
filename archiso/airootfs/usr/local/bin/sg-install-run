@@ -152,7 +152,7 @@ echo "\$HOSTNAME" > /etc/hostname
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.9.5"
+PRETTY_NAME="safegamingOS 0.9.6"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling

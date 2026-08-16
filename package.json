@@ -1,7 +1,7 @@
 {
   "name": "safegamingos",
   "private": true,
-  "version": "0.9.5",
+  "version": "0.9.6",
   "type": "module",
   "description": "safegamingOS — Qubes-like room isolation on Arch Linux for gaming and streaming (archiso build project, no web app)",
   "scripts": {
