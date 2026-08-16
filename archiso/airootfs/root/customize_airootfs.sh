@@ -16,14 +16,17 @@ ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 #     /usr/lib/os-release on Arch — write the real file there. ---
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.10.0"
+PRETTY_NAME="safegamingOS 0.11.0"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling
 ANSI_COLOR="38;2;45;212;167"
-HOME_URL="https://github.com/met4444m-collab/safegamingos"
+HOME_URL="https://github.com/met4444m-collab/safegameos"
 LOGO=safegamingos
 EOF
+# версия для автообновления (sg-update сверяет с релизами GitHub)
+mkdir -p /usr/share/safegamingos
+printf '%s\n' '0.11.0' > /usr/share/safegamingos/version
 
 echo ":: safegamingOS customize_airootfs: live user"
 
@@ -52,6 +55,11 @@ chmod +x /etc/skel/Desktop/*.desktop 2>/dev/null || true
 mkdir -p /home/live/.config/autostart
 cp -f /etc/skel/.config/autostart/sg-wallpaper.desktop /home/live/.config/autostart/ 2>/dev/null || true
 cp -f /etc/skel/.config/autostart/sg-installer.desktop /home/live/.config/autostart/ 2>/dev/null || true
+cp -f /etc/skel/.config/autostart/sg-update.desktop /home/live/.config/autostart/ 2>/dev/null || true
+mkdir -p /home/live/.config/systemd/user
+cp -f /etc/skel/.config/systemd/user/sg-update-check.service \
+      /etc/skel/.config/systemd/user/sg-update-check.timer \
+      /home/live/.config/systemd/user/ 2>/dev/null || true
 cp -f /etc/skel/Desktop/*.desktop /home/live/Desktop/ 2>/dev/null || true
 chmod +x /home/live/Desktop/*.desktop 2>/dev/null || true
 chown -R live:live /home/live/.config /home/live/Desktop 2>/dev/null || true

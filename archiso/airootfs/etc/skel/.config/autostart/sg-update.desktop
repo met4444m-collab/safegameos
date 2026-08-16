@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=safegamingOS Updater
+Comment=Проверка обновлений safegamingOS в фоне
+Exec=/usr/local/bin/sg-update-timer-setup
+X-KDE-autostart-after=panel
+Terminal=false
+NoDisplay=false

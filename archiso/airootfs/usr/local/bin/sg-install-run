@@ -159,7 +159,8 @@ mkdir -p "$TARGET/usr/share/plymouth/themes" "$TARGET/usr/share/wallpapers" \
          "$TARGET/usr/local/bin" "$TARGET/usr/local/lib/sg-rooms" \
          "$TARGET/etc/polkit-1/rules.d" "$TARGET/etc/sysctl.d" \
          "$TARGET/usr/share/applications" "$TARGET/etc/skel/Desktop" \
-         "$TARGET/etc/skel/.config/autostart" "$TARGET/usr/lib/systemd/system" \
+         "$TARGET/etc/skel/.config/autostart" "$TARGET/etc/skel/.config/systemd/user" \
+         "$TARGET/usr/lib/systemd/system" \
          "$TARGET/usr/share/color-schemes" "$TARGET/usr/share/konsole" \
          "$TARGET/etc/firefox/policies" "$TARGET/usr/share/safegamingos" \
          "$TARGET/usr/share/sddm/themes/breeze"
@@ -171,6 +172,7 @@ cp /usr/share/konsole/safegamingOS.colorscheme /usr/share/konsole/safegamingOS.p
 cp /etc/skel/.config/konsolerc "$TARGET/etc/skel/.config/" 2>/dev/null || true
 cp /etc/firefox/policies/policies.json "$TARGET/etc/firefox/policies/" 2>/dev/null || true
 cp /usr/share/safegamingos/welcome.html "$TARGET/usr/share/safegamingos/" 2>/dev/null || true
+cp /usr/share/safegamingos/version "$TARGET/usr/share/safegamingos/" 2>/dev/null || true
 cp /usr/local/lib/sg-rooms/lib.sh "$TARGET/usr/local/lib/sg-rooms/lib.sh" 2>/dev/null || true
 cp /usr/local/bin/sg-* "$TARGET/usr/local/bin/" 2>/dev/null || true
 cp /etc/polkit-1/rules.d/49-safegamingos.rules "$TARGET/etc/polkit-1/rules.d/" 2>/dev/null || true
@@ -180,6 +182,10 @@ for f in safegamingos-gui.desktop sg-browser.desktop sg-games.desktop sg-streami
   cp "/usr/share/applications/$f" "$TARGET/etc/skel/Desktop/" 2>/dev/null || true
 done
 cp /etc/skel/.config/autostart/sg-wallpaper.desktop "$TARGET/etc/skel/.config/autostart/" 2>/dev/null || true
+cp /etc/skel/.config/autostart/sg-update.desktop "$TARGET/etc/skel/.config/autostart/" 2>/dev/null || true
+cp /etc/skel/.config/systemd/user/sg-update-check.service \
+   /etc/skel/.config/systemd/user/sg-update-check.timer \
+   "$TARGET/etc/skel/.config/systemd/user/" 2>/dev/null || true
 cp /usr/lib/systemd/system/sg-watch.service \
    /usr/lib/systemd/system/sg-av-scan.service \
    /usr/lib/systemd/system/sg-av-scan.timer \
@@ -268,12 +274,12 @@ echo "\$HOSTNAME" > /etc/hostname
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.10.0"
+PRETTY_NAME="safegamingOS 0.11.0"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling
 ANSI_COLOR="38;2;45;212;167"
-HOME_URL="https://github.com/met4444m-collab/safegamingos"
+HOME_URL="https://github.com/met4444m-collab/safegameos"
 LOGO=safegamingos
 EOF
 

@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# safegamingOS — автообновление: проверка новых версий (GitHub Releases),
+# скачивание и установка слоя safegamingOS с подтверждением пользователя.
+#
+# Usage:
+#   sg-update check [--notify]          проверить наличие новой версии
+#   sg-update download [--iso|--files]  скачать новую версию (ISO или слой)
+#   sg-update upgrade [--yes]           скачать + установить слой (root)
+#   sg-update apply ФАЙЛ [--yes]        применить локальный файл слоя (root)
+#   sg-update rollback                  откатить последнее обновление (root)
+#
+# check/download работают без root; с root-операциями скрипт сам перевызывает
+# себя через pkexec (правило polkit 49-safegamingos: wheel — без пароля).
+set -uo pipefail
+
+REPO="met4444m-collab/safegameos"
+VERSION_FILE="/usr/share/safegamingos/version"
+API="https://api.github.com/repos/${REPO}/releases/latest"
+DL_ROOT="/var/cache/sg-update"
+ISO_PREFIX="safegamingos"
+PAYLOAD_PREFIX="safegamingos-files"
+
+local_ver() { [[ -f "${VERSION_FILE}" ]] && cat "${VERSION_FILE}" || echo "0.0.0"; }
+
+latest_json() { curl -fsS --max-time 25 "${API}" 2>/dev/null || return 1; }
+
+latest_ver() {
+  local v
+  v="$(latest_json | jq -r '.tag_name // empty' 2>/dev/null | sed 's/^v//')"
+  [[ -n "${v}" ]] && printf '%s' "${v}"
+}
+
+latest_asset_url() { # $1 = имя файла
+  latest_json | jq -r --arg n "$1" '.assets[] | select(.name == $n) | .browser_download_url // empty' 2>/dev/null
+}
+
+# 0 — равны, 1 — $1 > $2, 2 — $1 < $2 (по числовым компонентам x.y.z...)
+ver_cmp() {
+  local -a a b
+  local i
+  IFS=. read -ra a <<< "${1:-0}"
+  IFS=. read -ra b <<< "${2:-0}"
+  for ((i = 0; i < 8; i++)); do
+    [[ -n "${a[$i]:-}" ]] || a[$i]=0
+    [[ -n "${b[$i]:-}" ]] || b[$i]=0
+    if (( a[i] > b[i] )); then return 1; fi
+    if (( a[i] < b[i] )); then return 2; fi
+  done
+  return 0
+}
+
+is_newer() { ver_cmp "$1" "$2"; [[ $? -eq 1 ]]; }
+
+need_root() { # перевызов через pkexec, если мы не root
+  if [[ ${EUID} -ne 0 ]]; then
+    exec pkexec /usr/local/bin/sg-update "$@"
+  fi
+}
+
+confirm() { # $1 = вопрос; YES=1 пропускает промпт
+  local ans
+  [[ "${YES:-0}" -eq 1 ]] && return 0
+  read -r -p "$1 [y/N] " ans
+  [[ "${ans,,}" == "y" || "${ans,,}" == "yes" || "${ans,,}" == "д" || "${ans,,}" == "да" ]]
+}
+
+cmd_check() {
+  local cur latest
+  cur="$(local_ver)"
+  latest="$(latest_ver)" || { echo "Нет связи с GitHub — обновления не проверены."; return 4; }
+  echo "Текущая версия safegamingOS: ${cur}"
+  if is_newer "${latest}" "${cur}"; then
+    echo "Доступно обновление: v${latest}  (sg-update upgrade)"
+    return 3
+  fi
+  echo "Вы на последней версии."
+  return 0
+}
+
+cmd_check_notify() {
+  cmd_check >/dev/null 2>&1
+  local rc=$?
+  if [[ ${rc} -eq 3 ]]; then
+    local latest
+    latest="$(latest_ver)"
+    if command -v notify-send >/dev/null 2>&1; then
+      local action
+      action="$(notify-send -a safegamingOS -u normal -t 0 \
+        "Обновление safegamingOS: v${latest}" \
+        "Доступна новая версия. Нажми «Обновить», чтобы скачать и установить." \
+        --action=upgrade="Обновить" --action=later="Позже" 2>/dev/null)"
+      if [[ "${action}" == "upgrade" ]]; then
+        exec /usr/bin/konsole -e /usr/local/bin/sg-update upgrade
+      fi
+    else
+      echo "Доступно обновление safegamingOS v${latest}: sudo sg-update upgrade"
+    fi
+  elif [[ ${rc} -eq 4 ]] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -a safegamingOS -u low "safegamingOS" "Нет связи с GitHub — обновления не проверены." 2>/dev/null || true
+  fi
+  return 0
+}
+
+cmd_download() { # $1 = iso|files
+  local what="${1:-iso}" cur latest name url dir
+  cur="$(local_ver)"
+  latest="$(latest_ver)" || { echo "Нет связи с GitHub." >&2; return 1; }
+  if [[ "${what}" == "files" ]]; then
+    need_root "$0" download --files
+    name="${PAYLOAD_PREFIX}-${latest}.tar.zst"
+    url="$(latest_asset_url "${name}")"
+    dir="${DL_ROOT}"
+    mkdir -p "${dir}"
+  else
+    name="${ISO_PREFIX}-${latest}-x86_64.iso"
+    url="$(latest_asset_url "${name}")"
+    dir="${HOME:-/root}/Downloads"
+    mkdir -p "${dir}"
+  fi
+  [[ -n "${url}" ]] || { echo "Артефакт ${name} не найден в релизе v${latest}." >&2; return 1; }
+  echo "Скачиваю ${name} (v${latest})..."
+  curl -fL --progress-bar -o "${dir}/${name}" "${url}" || { echo "Ошибка скачивания." >&2; return 1; }
+  echo "✓ ${dir}/${name}"
+}
+
+apply_payload() { # $1 файл слоя, $2 старая версия, $3 новая версия
+  local f="$1" old="$2" new="$3"
+  local backup="${DL_ROOT}/backup-${old}.tar.zst"
+  local -a paths=(
+    usr/local/bin
+    usr/local/lib/sg-rooms
+    usr/share/safegamingos
+    usr/share/plymouth/themes/safegamingos
+    usr/share/wallpapers
+    usr/share/color-schemes/safegamingOS.colors
+    usr/share/konsole
+    usr/share/applications/safegamingos-gui.desktop
+    usr/share/applications/sg-browser.desktop
+    usr/share/applications/sg-games.desktop
+    usr/share/applications/sg-streaming.desktop
+    etc/skel
+    etc/polkit-1
+    etc/sysctl.d/99-safegamingos.conf
+    etc/nftables.conf
+    etc/firefox
+    usr/lib/systemd/system/sg-av-scan.service
+    usr/lib/systemd/system/sg-av-scan.timer
+    usr/lib/systemd/system/sg-track.service
+    usr/lib/systemd/system/sg-watch.service
+    usr/share/sddm/themes/breeze/theme.conf.user
+  )
+  echo "Резервная копия текущего слоя (${backup})..."
+  tar --zstd -cf "${backup}" -C / "${paths[@]}" >/dev/null 2>&1 || true
+  echo "Устанавливаю слой v${new}..."
+  if ! tar --zstd -xf "${f}" -C / 2>/dev/null; then
+    echo "Ошибка распаковки — откатываю." >&2
+    [[ -f "${backup}" ]] && tar --zstd -xf "${backup}" -C / 2>/dev/null || true
+    return 1
+  fi
+  chmod +x /usr/local/bin/sg-* 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl restart sg-watch sg-track 2>/dev/null || true
+  sysctl --system >/dev/null 2>&1 || true
+  printf '%s\n' "${new}" > "${VERSION_FILE}"
+  echo "✓ safegamingOS обновлён до v${new}."
+  if command -v pacman >/dev/null 2>&1 && timeout 8 curl -fsI https://geo.mirror.pkgbuild.com/ >/dev/null 2>&1; then
+    if confirm "Обновить пакеты Arch (pacman -Syu)? (рекомендуется)"; then
+      pacman -Syu --noconfirm || echo "pacman -Syu не завершился — повторите позже: sudo pacman -Syu"
+    fi
+  fi
+  return 0
+}
+
+cmd_upgrade() {
+  need_root "$0" upgrade "$@"
+  local cur latest name url f
+  cur="$(local_ver)"
+  latest="$(latest_ver)" || { echo "Нет связи с GitHub." >&2; return 1; }
+  if ! is_newer "${latest}" "${cur}"; then
+    echo "Уже актуально (v${cur})."
+    return 0
+  fi
+  name="${PAYLOAD_PREFIX}-${latest}.tar.zst"
+  url="$(latest_asset_url "${name}")"
+  [[ -n "${url}" ]] || { echo "Слой обновления ${name} не найден в релизе v${latest}." >&2; return 1; }
+  mkdir -p "${DL_ROOT}"
+  f="${DL_ROOT}/${name}"
+  if [[ ! -f "${f}" ]]; then
+    echo "Скачиваю слой обновления ${name} (v${latest})..."
+    curl -fL --progress-bar -o "${f}" "${url}" || { echo "Ошибка скачивания." >&2; return 1; }
+  fi
+  confirm "Обновить safegamingOS с v${cur} до v${latest}? (заменяется только слой safegamingOS, ваши данные не трогаются)" \
+    || { echo "Отменено."; return 0; }
+  apply_payload "${f}" "${cur}" "${latest}"
+}
+
+cmd_apply() {
+  need_root "$0" apply "$@"
+  local f="${1:-}" cur new
+  [[ -n "${f}" && -f "${f}" ]] || { echo "usage: sg-update apply ФАЙЛ [--yes]" >&2; return 1; }
+  cur="$(local_ver)"
+  new="$(tar --zstd -xOf "${f}" usr/share/safegamingos/version 2>/dev/null | head -n1)"
+  [[ -n "${new}" ]] || new="${cur}"
+  confirm "Применить слой safegamingOS из ${f}?" || { echo "Отменено."; return 0; }
+  apply_payload "${f}" "${cur}" "${new}"
+}
+
+cmd_rollback() {
+  need_root "$0" rollback
+  local b
+  b="$(ls -t "${DL_ROOT}"/backup-*.tar.zst 2>/dev/null | head -n1)"
+  [[ -n "${b}" && -f "${b}" ]] || { echo "Резервных копий нет (${DL_ROOT})." >&2; return 1; }
+  echo "Откат из ${b}..."
+  tar --zstd -xf "${b}" -C / 2>/dev/null || { echo "Ошибка отката." >&2; return 1; }
+  chmod +x /usr/local/bin/sg-* 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  echo "✓ Откат выполнен."
+}
+
+usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash'; }
+
+cmd="${1:-check}"; shift || true
+case "${cmd}" in
+  check)
+    if [[ "${1:-}" == "--notify" ]]; then cmd_check_notify; else cmd_check; fi
+    ;;
+  download) cmd_download "${1:-iso}" ;;
+  upgrade) YES=0; [[ "${1:-}" == "--yes" ]] && YES=1; cmd_upgrade ;;
+  apply) YES=0; [[ "${2:-}" == "--yes" ]] && YES=1; cmd_apply "${1:-}" ;;
+  rollback) cmd_rollback ;;
+  -h|--help|help) usage; exit 0 ;;
+  *) echo "usage: sg-update check|download|upgrade|apply|rollback" >&2; usage >&2; exit 1 ;;
+esac

@@ -87,15 +87,7 @@ python-pyqt6
 polkit
 polkit-kde-agent
 # --- installer ---
-dialog
-# --- utilities ---
-sudo
-vim
-man-db
-man-pages
-git
-curl
-wget
-reflector
-rsync
-openssh
+dialog# --- utilities ---
+sudo vim man-db man-pages git curl wget reflector rsync openssh
+# --- auto-update (sg-update) ---
+libnotify jq

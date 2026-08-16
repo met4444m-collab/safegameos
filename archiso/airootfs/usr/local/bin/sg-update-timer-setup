@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# safegamingOS — включить пользовательский таймер проверки обновлений
+# (идемпотентно; запускается из автозапуска KDE при входе в сессию).
+set -u
+systemctl --user enable sg-update-check.timer >/dev/null 2>&1 || true
+systemctl --user start sg-update-check.timer >/dev/null 2>&1 || true
+exit 0

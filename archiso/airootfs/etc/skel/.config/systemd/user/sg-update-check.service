@@ -1,0 +1,6 @@
+[Unit]
+Description=safegamingOS update check (notify)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sg-update check --notify
