@@ -30,7 +30,7 @@ jobs:
       - name: Install archiso
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed archiso jq
+          pacman -S --noconfirm --needed archiso jq gh
 
       # public repos get ~5GB Actions artifact storage; since v0.10.0 the ISO
       # bundles the full offline install package set (/opt/sg-offline) and is
@@ -72,7 +72,10 @@ jobs:
               --notes "Автосборка safegamingOS v$VER — ISO для установки с флешки + слой обновления для sg-update."
           fi
 
+      # if: always() — ISO-артефакт сохраняется даже если публикация релиза
+      # упала (чтобы сборку не приходилось переделывать целиком).
       - name: Upload ISO artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: safegamingos-iso
