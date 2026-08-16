@@ -4,7 +4,6 @@
 # pkexec sg-install-run (root-помощник) с логом /tmp/sg-install.log.
 import os
 import re
-import shlex
 import subprocess
 import sys
 
@@ -18,8 +17,30 @@ from PyQt6.QtWidgets import (
 )
 
 APP = "safegamingOS"
-CONF = "/tmp/sg-install.conf"
 LOG = "/tmp/sg-install.log"
+
+# Конфиг пишем в УНИКАЛЬНЫЙ файл с O_EXCL: фиксированный путь /tmp/sg-install.conf
+# позволял другому процессу того же пользователя (например, браузерной комнате —
+# она работает от UID сессии) подменить файл до того, как root-помощник его
+# прочитает. Уникальное имя + O_EXCL делают подмену невозможной; вдобавок
+# sg-install-run больше не выполняет конфиг как шелл-код (только строгий разбор).
+CONF_PREFIX = "/tmp/sg-install"
+
+
+def make_conf(cfg):
+    """Atomically write cfg to a fresh, exclusively-created 0600 file.
+    Returns the path. O_EXCL + unique name: no other process (same UID)
+    can pre-create or swap the file between write and pkexec launch."""
+    for _ in range(32):
+        path = f"{CONF_PREFIX}.{os.getpid()}.{os.urandom(6).hex()}.conf"
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(cfg)
+        return path
+    raise OSError("не удалось создать файл конфига")
 GREEN = "#2dd4a7"
 DARK = "#0b1220"
 PANEL = "#111a2e"
@@ -405,9 +426,13 @@ class MainWin(QMainWindow):
     def start_install(self):
         a = self.pages[2]
         disk = self.pages[1].selected()
-        # shell-quote every value: PASS is free-form and must survive `source`
-        # in sg-install-run unchanged (quotes, $, ;, etc.)
-        q = shlex.quote
+        # shell-quote every value: PASS is free-form and must survive the
+        # strict KEY=value parser in sg-install-run unchanged (quotes, $, ;).
+        # Формат — одинарные кавычки с '\'' для кавычки внутри (как shell_quote
+        # в sg-install) — sg-install-run разбирает его без eval.
+        def shq(s):
+            return "'" + s.replace("'", "'\\''") + "'"
+        q = shq
         cfg = (
             f"DISK={q(disk)}\n"
             f"HOSTNAME={q(a.host.text().strip())}\n"
@@ -417,15 +442,13 @@ class MainWin(QMainWindow):
             f"WINE={q('1' if a.wine.isChecked() else '0')}\n"
         )
         try:
-            fd = os.open(CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(cfg)
+            conf = make_conf(cfg)
         except OSError as e:
             QMessageBox.critical(self, APP, f"не удалось записать конфиг: {e}")
             return
         try:
             self.proc = subprocess.Popen(
-                ["pkexec", "/usr/local/bin/sg-install-run", CONF],
+                ["pkexec", "/usr/local/bin/sg-install-run", conf],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as e:

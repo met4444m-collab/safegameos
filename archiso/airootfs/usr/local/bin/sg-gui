@@ -7,7 +7,6 @@
 # Usage: sg-gui   (или ярлык «SafeGuard» в меню приложений)
 
 import os
-import sqlite3
 import subprocess
 import sys
 
@@ -20,8 +19,10 @@ from PyQt6.QtWidgets import (
     QHeaderView, QPlainTextEdit,
 )
 
+# База комнат и журнал — root-only (0600/0700), поэтому GUI читает их через
+# pkexec-помощник sg-db-view (TSV), а не напрямую: прямой доступ был бы
+# ослаблением безопасности базы ради удобства.
 DB = "/var/lib/sg-rooms/sg.db"
-EVENTS_LOG = "/var/log/sg-rooms/events.log"
 
 BG = "#070b12"
 PANEL = "#0d1522"
@@ -72,20 +73,23 @@ def pkexec(cmd):
 
 
 def db_rooms():
-    try:
-        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=3)
-        con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT r.id,r.name,r.type,r.status,r.mem,r.cpu,r.app,r.created,"
-            " COALESCE(p.granted, CASE WHEN r.type IN ('browser','games','streaming')"
-            " THEN 1 ELSE 0 END) AS net"
-            " FROM rooms r LEFT JOIN permissions p ON p.room=r.id AND p.kind='net'"
-            " ORDER BY r.created"
-        ).fetchall()
-        con.close()
-        return [dict(r) for r in rows]
-    except Exception:
+    """Rooms list via root helper (pkexec sg-db-view rooms) — TSV rows:
+    id | name | type | status | mem | cpu | app | net"""
+    ok, out = run(pkexec(["sg-db-view", "rooms"]), timeout=20)
+    if not ok:
         return []
+    rooms = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 8:
+            continue
+        r = {
+            "id": parts[0], "name": parts[1], "type": parts[2],
+            "status": parts[3], "mem": parts[4], "cpu": parts[5],
+            "app": parts[6], "net": parts[7],
+        }
+        rooms.append(r)
+    return rooms
 
 
 class RunDialog(QDialog):
@@ -367,11 +371,10 @@ class LogTab(QWidget):
         self.refresh()
 
     def refresh(self):
-        try:
-            with open(EVENTS_LOG, "r", encoding="utf-8", errors="replace") as f:
-                data = f.read()
-            self.out.setPlainText(data[-20000:])
-        except Exception:
+        ok, out = run(pkexec(["sg-db-view", "events"]), timeout=20)
+        if ok and out.strip():
+            self.out.setPlainText(out[-20000:])
+        else:
             self.out.setPlainText("(журнал ещё пуст — события появятся после первого запуска комнат)")
 
 

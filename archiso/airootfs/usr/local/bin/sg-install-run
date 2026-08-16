@@ -14,22 +14,117 @@ set -uo pipefail
 CONF="${1:?usage: sg-install-run /path/to/config}"
 LOG=/tmp/sg-install.log
 : > "$LOG"
-chmod 666 "$LOG" 2>/dev/null || true
+chmod 644 "$LOG" 2>/dev/null || true
 
 step() { echo "PROGRESS:$1|$2" >> "$LOG"; }
 die() { echo "ERROR|$*" >> "$LOG"; exit 1; }
 
-[[ -f "$CONF" ]] || die "конфиг не найден: $CONF"
-# shellcheck source=/dev/null
-source "$CONF"
+# ---------------------------------------------------------------------------
+# Безопасная загрузка конфига.
+#
+# Раньше здесь был `source "$CONF"` — конфиг писался GUI на ФИКСИРОВАННЫЙ путь
+# /tmp/sg-install.conf обычным пользователем (live), а root-помощник выполнял
+# его как шелл-код. Любой процесс пользователя сессии (включая браузерную
+# комнату — она работает от того же UID!) мог:
+#   1) подменить файл гонкой между записью GUI и запуском pkexec, или
+#   2) просто сам выполнить `pkexec sg-install-run /tmp/мой-конфиг`
+# (правило polkit разрешает wheel без пароля) — с произвольным шелл-кодом
+# внутри → ПОЛНЫЙ root-RCE.
+#
+# Теперь конфиг НИКОГДА не выполняется: только построчный разбор KEY=value,
+# строгая валидация каждого поля, проверка владельца и прав файла. Любая
+# строка, не являющаяся ожидаемой парой KEY=value — ошибка, а не исполнение.
+# ---------------------------------------------------------------------------
+[[ -f "$CONF" && ! -L "$CONF" ]] || die "конфиг не найден: $CONF"
+CONF="$(realpath "$CONF" 2>/dev/null || echo "$CONF")"
+# конфиг должен принадлежать реальному пользователю, который вызвал помощника
+# (pkexec: PKEXEC_UID; sudo: SUDO_USER), и не быть группово/общедоступно
+# записываемым — защита от чужой подмены файла.
+conf_owner="$(stat -c %u "$CONF" 2>/dev/null || echo -1)"
+conf_mode="$(stat -c %a "$CONF" 2>/dev/null || echo 777)"
+invoker="${PKEXEC_UID:-}"
+if [[ -z "${invoker}" ]]; then
+  invoker="$(id -u "${SUDO_USER:-root}" 2>/dev/null || echo 0)"
+fi
+[[ "${invoker}" =~ ^[0-9]+$ ]] || invoker=0
+if [[ "${conf_owner}" != "${invoker}" ]]; then
+  die "конфиг принадлежит другому пользователю — отмена"
+fi
+if [[ $(( conf_mode & 022 )) -ne 0 ]]; then
+  die "конфиг не должен быть записываемым для группы/всех — отмена"
+fi
+
+# --- строгий разбор KEY=value (никакого source/eval) ---
+DISK="" HOSTNAME="" USERNAME="" PASS="" SWAP_GB="" WINE=""
+while IFS= read -r _line; do
+  [[ -n "${_line}" ]] || continue
+  # только печатные символы, никаких переводов строк/управляющих кодов
+  [[ "${_line}" == *[![:print:]]* ]] && die "конфиг: недопустимые символы в строке"
+  case "${_line}" in
+    DISK=*|HOSTNAME=*|USERNAME=*|PASS=*|SWAP_GB=*|WINE=*) ;;
+    *) die "конфиг: неизвестная строка: ${_line%%=*}" ;;
+  esac
+  _key="${_line%%=*}"
+  _val="${_line#*=}"
+  # Значения пишутся одинарными кавычками (shell_quote в sg-install, shq в GUI).
+  # Снимаем кавычки БЕЗ eval. Экранированная кавычка внутри значения — это
+  # '\'' (bash-стиль) или "'" (Python shlex-стиль: закрывающая кавычка
+  # сегмента + "'" + открывающая, т.е. 4 символа '""'). Всё остальное —
+  # данные как есть.
+  if [[ "${_val:0:1}" == "'" ]]; then
+    _val="${_val:1}"
+    _decoded=""
+    while [[ -n "${_val}" ]]; do
+      # bash-стиль: '\''  (4 символа: ' \ ' ' — закрывающая + escape)
+      if [[ "${_val:0:4}" == "'\\''" ]]; then
+        _decoded+="'"
+        _val="${_val:4}"
+      # shlex-стиль: '""'  (4 символа: ' " ' " — закрывающая + escape)
+      elif [[ "${_val:0:4}" == $'\'\"\'\"' ]]; then
+        _decoded+="'"
+        _val="${_val:4}"
+      elif [[ "${_val:0:1}" == "'" ]]; then
+        # граница сегмента: shlex/shell_quote склеивают сегменты '...' подряд,
+        # кавычка между ними — это разделитель, НЕ конец значения
+        _val="${_val:1}"
+      else
+        _decoded+="${_val:0:1}"
+        _val="${_val:1}"
+      fi
+    done
+    _val="${_decoded}"
+  fi
+  case "${_key}" in
+    DISK)     DISK="${_val}" ;;
+    HOSTNAME) HOSTNAME="${_val}" ;;
+    USERNAME) USERNAME="${_val}" ;;
+    PASS)     PASS="${_val}" ;;
+    SWAP_GB)  SWAP_GB="${_val}" ;;
+    WINE)     WINE="${_val}" ;;
+  esac
+done < "$CONF"
 rm -f "$CONF"
 
-: "${DISK:?}"; : "${HOSTNAME:?}"; : "${USERNAME:?}"; : "${PASS:?}"
-SWAP_GB="${SWAP_GB:-16}"
-WINE="${WINE:-0}"
-
-[[ "$DISK" =~ ^/dev/[a-z0-9]+$ ]] || die "неверный путь диска: $DISK"
+# --- строгая валидация значений (данные, не код) ---
+[[ -n "${DISK}" && -n "${HOSTNAME}" && -n "${USERNAME}" && -n "${PASS}" ]] \
+  || die "конфиг: не хватает полей (DISK/HOSTNAME/USERNAME/PASS)"
+[[ "$DISK" =~ ^/dev/[a-zA-Z0-9]+$ ]] || die "неверный путь диска: $DISK"
 [[ -b "$DISK" ]] || die "диск не найден: $DISK"
+# диск должен быть ЦЕЛЫМ диском, а не разделом
+[[ "$(lsblk -dno TYPE "$DISK" 2>/dev/null)" == "disk" ]] \
+  || die "указан не целый диск: $DISK (нужен /dev/sda, /dev/nvme0n1 и т.п.)"
+# защита от стирания рабочей системы: любой смонтированный раздел этого диска
+# (в т.ч. собственный корень, /boot, /home live-системы) → отмена
+if mount 2>/dev/null | grep -qE "^${DISK}[p0-9]*[[:space:]]+on "; then
+  die "диск $DISK уже смонтирован (на нём работает система?) — отмена"
+fi
+[[ "$HOSTNAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$ ]] \
+  || die "неверное имя компьютера: $HOSTNAME"
+[[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]{2,31}$ ]] \
+  || die "неверное имя пользователя: $USERNAME"
+[[ "$PASS" != *$'\n'* && "$PASS" != *$'\r'* ]] || die "недопустимый пароль"
+[[ "$SWAP_GB" =~ ^[0-9]+$ ]] || SWAP_GB=16
+[[ "$WINE" == "0" || "$WINE" == "1" ]] || WINE=0
 
 TARGET=/mnt
 cleanup() { umount -R "$TARGET" >/dev/null 2>&1 || true; }
@@ -152,7 +247,7 @@ echo "\$HOSTNAME" > /etc/hostname
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.9.7"
+PRETTY_NAME="safegamingOS 0.9.8"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling

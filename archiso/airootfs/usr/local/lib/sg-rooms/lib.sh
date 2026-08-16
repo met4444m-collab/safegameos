@@ -388,11 +388,15 @@ sg_block_url() {
     echo "error: недопустимый хост в URL '${url}' — блокировка отклонена" >&2
     return 1
   }
-  if grep -qE "^0\.0\.0\.0[[:space:]]+${host}([[:space:]]|$)" /etc/hosts; then
-    echo "ℹ ${host} уже заблокирован"
-    return 0
+  # Блокируем И IPv4 (0.0.0.0), И IPv6 (::): раньше блокировался только IPv4,
+  # и хост с AAAA-записью оставался доступен по IPv6 (заблокированный вирусный
+  # источник реально дотягивался). Обе строки помечаем # safegamingOS block.
+  if ! grep -qE "^0\.0\.0\.0[[:space:]]+${host}([[:space:]]|$)" /etc/hosts; then
+    printf '0.0.0.0\t%s\t# safegamingOS block\n' "${host}" >> /etc/hosts
   fi
-  printf '0.0.0.0\t%s\t# safegamingOS block\n' "${host}" >> /etc/hosts
+  if ! grep -qE "^::[[:space:]]+${host}([[:space:]]|$)" /etc/hosts; then
+    printf '::\t%s\t# safegamingOS block\n' "${host}" >> /etc/hosts
+  fi
   sqlite3 "${SG_DB}" \
     "INSERT OR REPLACE INTO blocked(url,host,virus,time,unblocked) VALUES('$(sg_esc "${url}")','${host}','$(sg_esc "${virus}")',$(sg_now),0);"
   sg_event "block" "URL ${url} заблокирован системно (${virus})."
@@ -406,7 +410,13 @@ sg_unblock_url() {
     echo "error: недопустимый хост в URL '${url}'" >&2
     return 1
   }
-  sed -i "/# safegamingOS block$/d; /^0\.0\.0\.0[[:space:]]\+${host}[[:space:]]/d" /etc/hosts
+  # Удаляем ТОЛЬКО строки блокировки ЭТОГО хоста (IPv4 и IPv6). Раньше sed
+  # вычищал ВСЕ строки с "# safegamingOS block" — разблокировка одной ссылки
+  # молча снимала блокировку со ВСЕХ вирусных источников.
+  sed -i -E \
+    -e "/^0\.0\.0\.0[[:space:]]+${host}([[:space:]]|$)/d" \
+    -e "/^::[[:space:]]+${host}([[:space:]]|$)/d" \
+    /etc/hosts
   sqlite3 "${SG_DB}" \
     "UPDATE blocked SET unblocked=1 WHERE url='$(sg_esc "${url}")';"
   sg_event "unblock" "URL ${url} разблокирован пользователем (ложное срабатывание?)."

@@ -18,7 +18,9 @@ if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && command -v sg-install-gui >/de
   exec sg-install-gui "$@"
 fi
 
-TMPCONF=/tmp/sg-install.conf
+# уникальное имя конфига: фиксированный путь позволял другому процессу того же
+# пользователя подменить файл до чтения root-помощником (см. sg-install-run)
+TMPCONF=/tmp/sg-install.conf.$$
 LOG=/tmp/sg-install.log
 trap 'rm -f "$TMPCONF"' EXIT
 
@@ -26,7 +28,7 @@ trap 'rm -f "$TMPCONF"' EXIT
 banner() {
   clear
   echo "=============================================="
-  echo "  safegamingOS 0.9.7 — установка на диск"
+  echo "  safegamingOS 0.9.8 — установка на диск"
   echo "=============================================="
   echo
 }
@@ -86,14 +88,19 @@ dialog --stdout --backtitle "safegamingOS installer" \
   || { banner; echo "Отменено."; exit 1; }
 
 # ---------------------------------------------------------------------------
-# write config (shell-quoted values so any special chars in the password survive)
+# write config. Значения — в одинарных кавычках (тот же формат, что и GUI),
+# экранированная кавычка внутри — '\''. sg-install-run разбирает этот формат
+# БЕЗ eval (см. там); пароль с любыми спецсимволами переживает путь до chpasswd.
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\''/g")"
+}
 {
-  printf 'DISK=%s\n'    "$(printf '%q' "$DISK")"
-  printf 'HOSTNAME=%s\n' "$(printf '%q' "safegamingos")"
-  printf 'USERNAME=%s\n' "$(printf '%q' "$USERNAME")"
-  printf 'PASS=%s\n'    "$(printf '%q' "$PASS")"
-  printf 'SWAP_GB=%s\n' "$(printf '%q' "$SWAP_GB")"
-  printf 'WINE=%s\n'    "$(printf '%q' "$WINE")"
+  printf 'DISK=%s\n'    "$(shell_quote "$DISK")"
+  printf 'HOSTNAME=%s\n' "$(shell_quote "safegamingos")"
+  printf 'USERNAME=%s\n' "$(shell_quote "$USERNAME")"
+  printf 'PASS=%s\n'    "$(shell_quote "$PASS")"
+  printf 'SWAP_GB=%s\n' "$(shell_quote "$SWAP_GB")"
+  printf 'WINE=%s\n'    "$(shell_quote "$WINE")"
 } > "$TMPCONF"
 chmod 600 "$TMPCONF"
 

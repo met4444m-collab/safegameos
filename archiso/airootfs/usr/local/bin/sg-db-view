@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# safegamingOS — read-only root helper: отдаёт данные SafeGuard для GUI.
+#
+# GUI (sg-gui) работает от обычного пользователя, а база комнат (0600 root)
+# и журнал событий (0700 root) ему недоступны — раньше GUI молча показывал
+# пустой список комнат. Теперь GUI читает данные через pkexec этот помощник
+# (правило polkit 49-safegamingos: wheel без пароля). Вывод — TSV, парсить
+# безопасно. Помощник ТОЛЬКО читает, ничего не пишет и не меняет.
+#
+# Usage: sg-db-view rooms|events|downloads|blocks
+set -uo pipefail
+
+source /usr/local/lib/sg-rooms/lib.sh
+sg_require sqlite3
+[[ $EUID -eq 0 ]] || { echo "error: root only" >&2; exit 1; }
+
+cmd="${1:-}"
+case "${cmd}" in
+  rooms)
+    # id | name | type | status | mem | cpu | app | net(granted/default)
+    sqlite3 -separator $'\t' "${SG_DB}" \
+      "SELECT r.id,r.name,r.type,r.status,r.mem,r.cpu,r.app,
+              COALESCE(p.granted, CASE WHEN r.type IN ('browser','games','streaming') THEN 1 ELSE 0 END)
+       FROM rooms r LEFT JOIN permissions p ON p.room=r.id AND p.kind='net'
+       ORDER BY r.created;" 2>/dev/null
+    ;;
+  events)
+    [[ -f "${SG_LOG}/events.log" ]] && tail -n 200 "${SG_LOG}/events.log"
+    ;;
+  downloads)
+    sqlite3 -separator $'\t' "${SG_DB}" \
+      "SELECT id,room,filename,source_url,status,datetime(time,'unixepoch')
+       FROM downloads ORDER BY id DESC LIMIT 100;" 2>/dev/null
+    ;;
+  blocks)
+    sqlite3 -separator $'\t' "${SG_DB}" \
+      "SELECT host,virus,datetime(time,'unixepoch'),
+              CASE unblocked WHEN 1 THEN 'unblocked' ELSE 'active' END
+       FROM blocked ORDER BY time DESC;" 2>/dev/null
+    ;;
+  -h|--help)
+    grep '^#' "$0" | sed 's/^# \{0,1\}//' | grep -v 'env bash'
+    ;;
+  *)
+    echo "usage: sg-db-view rooms|events|downloads|blocks" >&2
+    exit 1
+    ;;
+esac
+exit 0
