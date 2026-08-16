@@ -27,32 +27,15 @@ jobs:
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed archiso jq
 
-      - name: Prune old ISO artifacts (keep newest 2 — frees storage quota)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # public repos get ~5GB Actions artifact storage; a single ISO is ~1.3GB
-          # compressed, so old builds exhaust the quota and the upload starts
-          # failing (0.9.6 hit this). Delete all but the 2 newest artifacts.
-          # (Container default shell is sh -e; this step needs bash and jq,
-          # which is installed above together with archiso.)
-          page=1
-          while :; do
-            # API returns compact JSON on ONE line and each artifact embeds a
-            # workflow_run.id — parse with jq to touch only artifact ids
-            list=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?per_page=100&page=$page") || break
-            n=$(printf '%s' "$list" | jq '.total_count' 2>/dev/null || echo 0)
-            ids=$(printf '%s' "$list" | jq -r '.artifacts[].id' 2>/dev/null | sort -rn | tail -n +3)
-            for id in $ids; do
-              echo ":: deleting old artifact $id"
-              curl -fsS -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
-                "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$id" >/dev/null || true
-            done
-            [ "${n:-0}" -lt 100 ] && break
-            page=$((page+1))
-          done
+      # public repos get ~5GB Actions artifact storage; a single ISO is ~1.3GB
+      # compressed, so old builds exhaust the quota and the upload starts
+      # failing (0.9.6 hit this). The official delete-artifact action removes
+      # every previous safegamingos-iso artifact by name, keeping exactly one.
+      - name: Prune old ISO artifacts (frees storage quota)
+        uses: actions/delete-artifact@v4
+        with:
+          name: safegamingos-iso
+          failOnError: false
 
       - name: Build ISO
         run: bash ./build_iso.sh
