@@ -105,9 +105,16 @@ chmod 700 "${home}" 2>/dev/null || true
 sg_snapshot_auto "${slug}" >/dev/null 2>&1 || true
 
 # --- firejail: изоляция ---
+# --seccomp=ptrace,process_vm_readv,process_vm_writev РАСШИРЯЕТ стандартный
+# фильтр: запрещает чтение/запись чужой памяти даже для процессов одного UID
+# (страховка к yama ptrace_scope — session-комнаты одного пользователя не
+# смогут шпионить друг за другом). --nonewprivs: setuid-бинарники внутри
+# комнаты не дают привилегий (PR_SET_NO_NEW_PRIVS) — нет лестницы наружу
+# даже через легитимный /usr/bin/passwd и т.п.
 fj=(firejail --name="${slug}" --hostname="${slug}" --private="${home}"
-    --private-tmp --noroot --caps.drop=all --seccomp --protocol=unix,inet,inet6
-    --shell=/bin/bash)
+    --private-tmp --noroot --caps.drop=all --nonewprivs
+    --seccomp=ptrace,process_vm_readv,process_vm_writev
+    --protocol=unix,inet,inet6 --shell=/bin/bash)
 
 # --- жёсткие опции (страховка от старых версий firejail) ---
 fj_supports ipc-namespace && fj+=(--ipc-namespace)

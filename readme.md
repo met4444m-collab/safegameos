@@ -4,7 +4,7 @@
 
 Live-система брендирована: DVD-логотип при загрузке, обои и тема KDE, фирменный терминал, стартовая страница Firefox. Инсталлятор открывается автоматически при загрузке live-образа (как в Windows 10) — установка без единой команды: выбор диска, форматирование, учётная запись, подкачка 16 ГБ, Wine/Steam по желанию.
 
-## Что уже есть (база v0.9.4)
+## Что уже есть (база v0.9.5)
 
 - **Собирается в загрузочный ISO** через `mkarchiso` (BIOS syslinux + UEFI systemd-boot).
 - **Загрузка со стилем DVD-логотипа** — plymouth-тема: слово `SAFEGAMINGOS` отскакивает от краёв экрана и меняет цвет (как DVD-логотип).
@@ -26,6 +26,12 @@ Live-система брендирована: DVD-логотип при загр
   - **Per-room UID (v0.9.3)**: обычные комнаты (все, кроме browser/games/streaming) работают от **собственного системного пользователя** `sgroom-<имя>` — чужие `/proc`, `/dev/shm`, сокеты сессии и файлы других комнат закрыты **ядром по UID**, а не чёрными списками. Комнаты с доступом к сессии (звук/экран: браузер, игры, OBS) остаются от пользователя сессии — осознанный продукт-трейдофф.
   - **AppArmor (v0.9.3)**: каждая комната запускается под профилем `firejail-default` (`--apparmor`) — MAC-слой поверх firejail, который наследуется всеми процессами комнаты и продолжает ограничивать даже при обходе firejail. Ядро грузится с `apparmor=1 security=apparmor` (live ISO и установка).
   - **Приватный /dev/shm (v0.9.4)**: firejail монтирует каждой комнате отдельный tmpfs на `/dev/shm` — файлы в разделяемой памяти не видны хосту и другим комнатам и исчезают вместе с комнатой (атака красной команды «shm-эскейп» — CONTAINED). При карантине/удалении комнаты SafeGuard дополнительно выметает остатки её UID с `/dev/shm` и `/run/user`.
+  - **🔴 polkit-RCE закрыт (v0.9.5)**: pkexec-правило SafeGuard теперь матчит только реальные инструменты (`^/usr/local/bin/sg-[a-z0-9-]+$`) — раньше подстрока `/sg-` позволяла любому wheel-процессу подсунуть свой скрипт (`/tmp/sg-evil`) и выполнить его **как root**. Теперь `/tmp/sg-evil` → denied.
+  - **Wayland по умолчанию (v0.9.5)**: десктоп стартует в KDE Plasma 6 **Wayland** (live + установленная ОС) — на X11 любой процесс сессии мог снимать весь экран и читать всю клавиатуру (`xwd`/XTEST); на Wayland экран/ввод изолированы порталами с явным запросом разрешения. X11-сессия остаётся в списке как fallback; добавлен `xorg-xwayland` для X11-приложений (игры/Wine).
+  - **Host-файрвол nftables (v0.9.5)**: вход = **drop** по умолчанию (lo, established/related, DHCP, ICMP), forward = drop, выход = allow. Открыть порт: `sudo nft add rule inet sg-firewall input tcp dport 22 accept`.
+  - **Seccomp + no_new_privs (v0.9.5)**: фильтр комнат блокирует `ptrace, process_vm_readv, process_vm_writev` (same-UID чтение памяти между session-комнатами), `--nonewprivs` отключает setuid-лестницу внутри песочницы (даже `/usr/bin/passwd` не даст root).
+  - **/proc hidepid (v0.9.5, установленная ОС)**: `/proc` монтируется с `hidepid=2` — процесс видит только свои процессы; session-комнаты не видят процессы хоста.
+  - **Ядро, батч 2 (v0.9.5)**: `perf_event_paranoid=3`, `unprivileged_bpf_disabled=1`, `userfaultfd=0`, `fs.protected_{fifos,regular}=2`, `protected_{hardlinks,symlinks}=1`, `suid_dumpable=0`, `kexec_load_disabled=1`, `rp_filter`, `tcp_syncookies`, запрет IP-редиректов/source-route.
   - `sg-block-url` / `sg-unblock-url` — блокировка источника в `/etc/hosts` (разблокировка — решение пользователя). DoH принудительно выключен политикой Firefox (`DNSOverHTTPS: false, Locked`), иначе заблокированные сайты резолвились бы через шифрованный DNS мимо `/etc/hosts`.
   - `sg-quarantine` / `sg-rooms` / `sg-setup` — карантин и восстановление комнат, список комнат, первичная настройка SafeGuard.
   - Всё логируется в SQLite-базу `/var/lib/sg-rooms/sg.db` и `/var/log/sg-rooms/events.log`.
@@ -34,13 +40,13 @@ Live-система брендирована: DVD-логотип при загр
 
 ```bash
 sudo pacman -S archiso
-sudo ./build_iso.sh          # → out/safegamingos-0.9.4-x86_64.iso
+sudo ./build_iso.sh          # → out/safegamingos-0.9.5-x86_64.iso
 ```
 
 Запись на флешку:
 
 ```bash
-sudo dd bs=4M if=out/safegamingos-0.9.4-x86_64.iso of=/dev/sdX status=progress oflag=sync
+sudo dd bs=4M if=out/safegamingos-0.9.5-x86_64.iso of=/dev/sdX status=progress oflag=sync
 ```
 
 ## Тест (сначала в виртуалке)
@@ -51,7 +57,7 @@ sudo dd bs=4M if=out/safegamingos-0.9.4-x86_64.iso of=/dev/sdX status=progress o
    # QEMU (пакеты qemu-desktop edk2-ovmf)
    qemu-system-x86_64 -enable-kvm -m 4096 -cpu host -smp 4 \
      -drive file=test.qcow2,if=virtio,format=qcow2 \
-     -cdrom out/safegamingos-0.9.4-x86_64.iso -boot d
+     -cdrom out/safegamingos-0.9.5-x86_64.iso -boot d
    ```
 
 2. Дождитесь рабочего стола (автовход `live`).
@@ -100,14 +106,14 @@ build_iso.sh                    # сборка ISO (mkarchiso)
 
 ## Что дальше
 
-- **Пер-комнатный файрвол nftables** с allowlist по хостам (сейчас сеть включается/выключается целиком).
+- **Пер-комнатный файрвол по хостам** — allowlist доменов для комнат (сейчас сеть включается/выключается целиком, файрвол host-wide).
 - **Per-room звук** — звук комнаты в отдельный sink (сейчас browser слушает системный звук).
 - **Wine/Proton-комнаты**: выбор «Wine или Proton» в инсталляторе, отдельная комната для Windows-игр.
 - **Авто-карантин** при повторных срабатываниях сторожей (по умолчанию решение всегда за пользователем).
 
 ## Честные ограничения v0.9
 
-- Изолированные комнаты (general/offline/прочие) — **per-room UID + AppArmor + firejail**: файловая/процессная изоляция на уровне ядра. Комнаты `browser`/`games`/`streaming` — от пользователя сессии (им нужны звук, порталы и экран): их граница — firejail (`--private` home, без session D-Bus, `--apparmor`) + модерация Wayland для экрана. Это НЕ гипервизор: ядро общее, поэтому абсолютной гарантии нет ни у одной песочницы на общем ядре — но у изолированных комнат граница уже ядерная (UID), а не только списки.
+- Изолированные комнаты (general/offline/прочие) — **per-room UID + AppArmor + firejail**: файловая/процессная изоляция на уровне ядра. Комнаты `browser`/`games`/`streaming` — от пользователя сессии (им нужны звук, порталы и экран): их граница — firejail (`--private` home, без session D-Bus, `--apparmor`, no_new_privs, seccomp) + модерация Wayland для экрана (дефолтная сессия — Wayland). Это НЕ гипервизор: ядро общее, поэтому абсолютной гарантии нет ни у одной песочницы на общем ядре — но у изолированных комнат граница уже ядерная (UID), а не только списки.
 - Сеть по умолчанию включена комнатам `browser`/`games`/`streaming` — они должны работать с интернетом. Если хочешь полностью перекрыть экфильтрацию — `sudo sg-net <комната> off` (например, для browser-комнаты, в которой качаешь подозрительные файлы).
 - Инсталлятор — свой, **без archinstall и без Python-зависимостей**: GUI-мастер `sg-install-gui` (основной путь) или dialog-фолбэк `sudo sg-install` в терминале без графики; оба передают настройки root-помощнику `sg-install-run` (parted → mkfs → pacstrap → chroot → GRUB → SafeGuard).
 - Для антивируса нужен ClamAV: `sudo pacman -S clamav && sudo freshclam` (в live-ISO и установке пакет идёт из коробки).

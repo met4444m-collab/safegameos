@@ -70,9 +70,13 @@ prismlauncher
 jre-openjdk
 firefox
 firejail
-# --- X11-изоляция комнат (sg-room-run --x11-isolate) ---
+# --- X11-изоляция комнат (sg-room-run --x11-isolate) + XWayland
+#     (X11-приложения внутри Wayland-сессии: игры, Wine) ---
 xorg-server-xephyr
 xorg-xauth
+xorg-xwayland
+# --- host firewall (вход по умолчанию закрыт) ---
+nftables
 # --- SafeGuard (rooms, AV, tracking) ---
 sqlite
 inotify-tools

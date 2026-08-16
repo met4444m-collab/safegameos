@@ -1,10 +1,17 @@
 // safegamingOS: allow users in group "wheel" to run SafeGuard tools
 // (sg-room-run, sg-av, sg-game-mode, ...) via pkexec without a password.
 // This powers the SafeGuard GUI; the tools themselves stay root-only.
+//
+// SECURITY: the program path is matched against a STRICT allowlist of real
+// SafeGuard tools (/usr/local/bin/sg-<name>). A loose substring match (any
+// path containing "/sg-") would let any wheel process write /tmp/sg-evil and
+// pkexec it as root — instant total compromise. Only these exact tools are
+// ever authorized, and /usr/local/bin is root-owned, so attackers cannot
+// plant replacements there.
 polkit.addRule(function (action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" && subject.isInGroup("wheel")) {
         var program = action.lookup("program");
-        if (program && program.indexOf("/sg-") !== -1) {
+        if (program && program.match(/^\/usr\/local\/bin\/sg-[a-z0-9-]+$/)) {
             return polkit.Result.YES;
         }
     }
