@@ -4,7 +4,7 @@
 
 Live-система брендирована: DVD-логотип при загрузке, обои и тема KDE, фирменный терминал, стартовая страница Firefox. Инсталлятор открывается автоматически при загрузке live-образа (как в Windows 10) — установка без единой команды: выбор диска, форматирование, учётная запись, подкачка 16 ГБ, Wine/Steam по желанию.
 
-## Что уже есть (база v0.9.3)
+## Что уже есть (база v0.9.4)
 
 - **Собирается в загрузочный ISO** через `mkarchiso` (BIOS syslinux + UEFI systemd-boot).
 - **Загрузка со стилем DVD-логотипа** — plymouth-тема: слово `SAFEGAMINGOS` отскакивает от краёв экрана и меняет цвет (как DVD-логотип).
@@ -25,6 +25,7 @@ Live-система брендирована: DVD-логотип при загр
   - **Авто-трекинг загрузок (v0.9.3)**: служба `sg-track` следит за каталогами Downloads всех комнат; для каждой новой загрузки автоматически записывается источник (URL извлекается из профиля Firefox комнаты — `places.sqlite`). SafeGuard при обнаружении вируса сам находит и блокирует сайт, откуда он скачан.
   - **Per-room UID (v0.9.3)**: обычные комнаты (все, кроме browser/games/streaming) работают от **собственного системного пользователя** `sgroom-<имя>` — чужие `/proc`, `/dev/shm`, сокеты сессии и файлы других комнат закрыты **ядром по UID**, а не чёрными списками. Комнаты с доступом к сессии (звук/экран: браузер, игры, OBS) остаются от пользователя сессии — осознанный продукт-трейдофф.
   - **AppArmor (v0.9.3)**: каждая комната запускается под профилем `firejail-default` (`--apparmor`) — MAC-слой поверх firejail, который наследуется всеми процессами комнаты и продолжает ограничивать даже при обходе firejail. Ядро грузится с `apparmor=1 security=apparmor` (live ISO и установка).
+  - **Приватный /dev/shm (v0.9.4)**: firejail монтирует каждой комнате отдельный tmpfs на `/dev/shm` — файлы в разделяемой памяти не видны хосту и другим комнатам и исчезают вместе с комнатой (атака красной команды «shm-эскейп» — CONTAINED). При карантине/удалении комнаты SafeGuard дополнительно выметает остатки её UID с `/dev/shm` и `/run/user`.
   - `sg-block-url` / `sg-unblock-url` — блокировка источника в `/etc/hosts` (разблокировка — решение пользователя). DoH принудительно выключен политикой Firefox (`DNSOverHTTPS: false, Locked`), иначе заблокированные сайты резолвились бы через шифрованный DNS мимо `/etc/hosts`.
   - `sg-quarantine` / `sg-rooms` / `sg-setup` — карантин и восстановление комнат, список комнат, первичная настройка SafeGuard.
   - Всё логируется в SQLite-базу `/var/lib/sg-rooms/sg.db` и `/var/log/sg-rooms/events.log`.
@@ -33,13 +34,13 @@ Live-система брендирована: DVD-логотип при загр
 
 ```bash
 sudo pacman -S archiso
-sudo ./build_iso.sh          # → out/safegamingos-0.9.3-x86_64.iso
+sudo ./build_iso.sh          # → out/safegamingos-0.9.4-x86_64.iso
 ```
 
 Запись на флешку:
 
 ```bash
-sudo dd bs=4M if=out/safegamingos-0.9.3-x86_64.iso of=/dev/sdX status=progress oflag=sync
+sudo dd bs=4M if=out/safegamingos-0.9.4-x86_64.iso of=/dev/sdX status=progress oflag=sync
 ```
 
 ## Тест (сначала в виртуалке)
@@ -50,7 +51,7 @@ sudo dd bs=4M if=out/safegamingos-0.9.3-x86_64.iso of=/dev/sdX status=progress o
    # QEMU (пакеты qemu-desktop edk2-ovmf)
    qemu-system-x86_64 -enable-kvm -m 4096 -cpu host -smp 4 \
      -drive file=test.qcow2,if=virtio,format=qcow2 \
-     -cdrom out/safegamingos-0.9.3-x86_64.iso -boot d
+     -cdrom out/safegamingos-0.9.4-x86_64.iso -boot d
    ```
 
 2. Дождитесь рабочего стола (автовход `live`).

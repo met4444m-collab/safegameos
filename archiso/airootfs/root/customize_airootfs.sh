@@ -16,7 +16,7 @@ ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 #     /usr/lib/os-release on Arch — write the real file there. ---
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.9.3"
+PRETTY_NAME="safegamingOS 0.9.4"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling

@@ -264,6 +264,29 @@ sg_room_running() {
   firejail --list 2>/dev/null | grep -q "name:$1\b"
 }
 
+# Вымести остатки комнаты с хостовых разделяемых каталогов (страховка к тому,
+# что firejail по умолчанию монтирует комнате ПРИВАТНЫЙ tmpfs на /dev/shm —
+# файлы комнаты физически не попадают на хост; этот свип ловит гипотетический
+# случай утечки, например через bind-дыру).
+#
+# Трогаем ТОЛЬКО файлы владельца комнаты (per-room UID sgroom-*): /dev/shm и
+# /run/user десктоп-сессии принадлежат пользователю сессии, и их мы не
+# трогаем ни при каких условиях. У session-комнат (browser/games/streaming)
+# отдельного UID нет — свип для них no-op.
+sg_cleanup_room_artifacts() {
+  local slug="$1"
+  local user; user="$(sg_room_user "${slug}" "$(sg_room_type "${slug}")")"
+  local session_user; session_user="$(real_user)"
+  [[ -n "${user}" && "${user}" != "root" && "${user}" != "${session_user}" ]] || return 0
+  local uid; uid="$(id -u "${user}" 2>/dev/null)"
+  [[ -n "${uid}" && "${uid}" =~ ^[0-9]+$ ]] || return 0
+  # файлы per-room UID в /dev/shm (обычно их там нет — shm приватный)
+  find /dev/shm -maxdepth 1 -user "${user}" -delete 2>/dev/null
+  # каталог /run/user/<uid> комнаты, если вдруг создан (logind его не создаёт)
+  rm -rf "/run/user/${uid}" 2>/dev/null || true
+  sg_event "system" "Очищены остатки комнаты «${slug}» с /dev/shm и /run/user (UID ${uid})."
+}
+
 sg_quarantine_room() {
   local slug="$1" why="$2"
   local home; home="$(sg_room_home "${slug}")"
@@ -273,6 +296,7 @@ sg_quarantine_room() {
   sg_room_running "${slug}" && firejail --shutdown="${slug}" >/dev/null 2>&1
   pkill -f -- "--name=${slug}" >/dev/null 2>&1 || true
   sleep 1
+  sg_cleanup_room_artifacts "${slug}"
   if [[ -d "${home}" ]]; then
     mkdir -p "${SG_QUARANTINE}"
     mv "${home}" "${qdir}"
@@ -307,6 +331,8 @@ sg_delete_room() {
   local qdir; qdir="$(sqlite3 "${SG_DB}" "SELECT quarantine_path FROM rooms WHERE id='${slug}';")"
   local home; home="$(sg_room_home "${slug}")"
   sg_room_running "${slug}" && firejail --shutdown="${slug}" >/dev/null 2>&1
+  sleep 1
+  sg_cleanup_room_artifacts "${slug}"
   rm -rf "${home}" "${qdir}"
   sg_remove_room_user "${slug}"
   sqlite3 "${SG_DB}" \
