@@ -27,10 +27,12 @@ jobs:
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed archiso jq
 
-      # public repos get ~5GB Actions artifact storage; a single ISO is ~1.3GB
-      # compressed, so old builds exhaust the quota and the upload starts
-      # failing (0.9.6 hit this). The official delete-artifact action removes
-      # every previous safegamingos-iso artifact by name, keeping exactly one.
+      # public repos get ~5GB Actions artifact storage; since v0.10.0 the ISO
+      # bundles the full offline install package set (/opt/sg-offline) and is
+      # ~3-4GB compressed, so old builds would exhaust the quota fast and the
+      # upload would start failing (0.9.6 hit this with a 1.3GB ISO). The
+      # official delete-artifact action removes every previous safegamingos-iso
+      # artifact by name, keeping exactly one.
       - name: Prune old ISO artifacts (frees storage quota)
         uses: geekyeggo/delete-artifact@v5
         with:

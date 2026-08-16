@@ -16,7 +16,7 @@ ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 #     /usr/lib/os-release on Arch — write the real file there. ---
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.9.8"
+PRETTY_NAME="safegamingOS 0.10.0"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling
@@ -27,11 +27,20 @@ EOF
 
 echo ":: safegamingOS customize_airootfs: live user"
 
-# --- live desktop user (password 'live', full sudo without prompt) ---
+# --- live desktop user (full sudo without prompt, NO password at all) ---
 # Groups: wheel + desktop/media groups so the live session has sound (pipewire),
 # GPU/DRM access, input devices, power control and removable media.
 useradd -m -G wheel,audio,video,input,storage,power,users,network,optical,rfkill -s /bin/bash live
-echo 'live:live' | chpasswd
+# Автовход SDDM на Arch срабатывает ТОЛЬКО если пользователь состоит в группе
+# autologin (иначе автовход молча не происходит и показывается экран логина —
+# именно поэтому пользователь видел запрос пароля). Группа nopasswdlogin —
+# страховка: если автовход по любой причине не сработал, ручной вход проходит
+# с пустым паролем.
+groupadd -r autologin 2>/dev/null || true
+groupadd -r nopasswdlogin 2>/dev/null || true
+usermod -aG autologin,nopasswdlogin live
+# Вход в ОС вообще без пароля: автовход в рабочий стол + пустой пароль на TTY.
+passwd -d live
 echo 'live ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/10-live
 chmod 440 /etc/sudoers.d/10-live
 
@@ -76,6 +85,36 @@ fi
 if systemctl list-unit-files apparmor.service >/dev/null 2>&1; then
   systemctl enable apparmor >/dev/null 2>&1 || true
   systemctl start apparmor >/dev/null 2>&1 || true
+fi
+
+echo ":: safegamingOS customize_airootfs: offline install bundle"
+
+# --- Офлайн-установка: чтобы инсталлятор работал БЕЗ интернета, в ISO
+#     зашивается полный набор пакетов + базы репозиториев + keyring в
+#     /opt/sg-offline. Трюк: свежий --dbpath (/opt/sg-offline/db) означает,
+#     что pacman не считает ни один пакет установленным, поэтому `-Sw`
+#     скачивает ВСЕ пакеты списка И их зависимости — даже если те же пакеты
+#     уже стоят в live-системе (их архивы в ISO не попадают иначе).
+#     Интернет нужен только при СБОРКЕ ISO (GitHub Actions), пользователю —
+#     никогда: инсталлятор ставит из /opt/sg-offline по локальным базам. ---
+if [[ -s /usr/local/lib/sg-rooms/install-pkgs.conf ]]; then
+  # shellcheck source=/dev/null
+  source /usr/local/lib/sg-rooms/install-pkgs.conf
+  mkdir -p /opt/sg-offline/db /opt/sg-offline/pkgs
+  pacman -Sy --dbpath /opt/sg-offline/db --cachedir /opt/sg-offline/pkgs --noconfirm >/dev/null 2>&1 || true
+  if ! expected=$(pacman -Sp --dbpath /opt/sg-offline/db $INSTALL_PKGS 2>/dev/null | wc -l); then expected=0; fi
+  if [[ "${expected}" -gt 0 ]]; then
+    pacman -Sw --dbpath /opt/sg-offline/db --cachedir /opt/sg-offline/pkgs --noconfirm $INSTALL_PKGS >/dev/null 2>&1 || true
+    if ! have=$(ls /opt/sg-offline/pkgs/*.pkg.tar.* 2>/dev/null | wc -l); then have=0; fi
+    if [[ "${have}" -ge "${expected}" ]]; then
+      cp -a /etc/pacman.d/gnupg /opt/sg-offline/gnupg 2>/dev/null || true
+      cp /etc/pacman.conf /opt/sg-offline/pacman.conf 2>/dev/null || true
+      touch /opt/sg-offline/READY
+      echo ":: офлайн-набор готов: ${have} пакетов, $(du -sh /opt/sg-offline/pkgs 2>/dev/null | cut -f1)"
+    else
+      echo ":: ВНИМАНИЕ: офлайн-набор неполный (${have}/${expected}) — ISO останется онлайн-инсталлятором"
+    fi
+  fi
 fi
 
 echo ":: safegamingOS customize_airootfs: done"

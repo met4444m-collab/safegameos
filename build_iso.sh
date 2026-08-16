@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-ISO_VERSION="0.9.8"
+ISO_VERSION="0.10.0"
 
 if [[ ${EUID} -ne 0 ]]; then
   echo ":: must be run as root (mkarchiso needs root)" >&2

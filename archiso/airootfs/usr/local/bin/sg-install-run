@@ -187,22 +187,43 @@ cp /usr/lib/systemd/system/sg-watch.service \
    "$TARGET/usr/lib/systemd/system/" 2>/dev/null || true
 chmod +x "$TARGET"/usr/local/bin/sg-* 2>/dev/null || true
 
-step 10 "Установка пакетов (10–25 минут, нужен интернет)..."
-pacstrap -K "$TARGET" \
-  base linux linux-firmware intel-ucode amd-ucode \
-  networkmanager iwd plymouth \
-  plasma-meta plasma-nm plasma-pa sddm sddm-kcm kscreen konsole dolphin kate gwenview spectacle \
-  xdg-utils xdg-user-dirs xdg-desktop-portal xdg-desktop-portal-kde power-profiles-daemon \
-  ttf-dejavu noto-fonts noto-fonts-cjk \
-  pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils sof-firmware \
-  mesa libva-intel-driver intel-media-driver vulkan-intel vulkan-radeon \
-  obs-studio prismlauncher jre-openjdk firefox firejail \
-  xorg-server xorg-xephyr xorg-xauth xorg-xwayland \
-  nftables \
-  sqlite inotify-tools python python-pyqt6 polkit polkit-kde-agent \
-  apparmor clamav dialog sudo vim git curl wget reflector rsync openssh \
-  grub efibootmgr acl \
-  || die "сбой установки пакетов (pacstrap). Проверьте интернет и лог."
+# --- список пакетов установки: ЕДИНЫЙ источник (install-pkgs.conf). Тот же
+#     файл при сборке ISO предзагружает офлайн-набор в /opt/sg-offline, чтобы
+#     установка работала вообще без интернета. ---
+# shellcheck source=/dev/null
+source /usr/local/lib/sg-rooms/install-pkgs.conf 2>/dev/null || true
+INSTALL_PKGS="${INSTALL_PKGS:-base linux linux-firmware intel-ucode amd-ucode networkmanager iwd plymouth plasma-meta plasma-nm plasma-pa sddm sddm-kcm kscreen konsole dolphin kate gwenview spectacle xdg-utils xdg-user-dirs xdg-desktop-portal xdg-desktop-portal-kde power-profiles-daemon ttf-dejavu noto-fonts noto-fonts-cjk pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils sof-firmware mesa libva-intel-driver intel-media-driver vulkan-intel vulkan-radeon obs-studio prismlauncher jre-openjdk firefox firejail xorg-server xorg-xephyr xorg-xauth xorg-xwayland nftables sqlite inotify-tools python python-pyqt6 polkit polkit-kde-agent apparmor clamav dialog sudo vim git curl wget reflector rsync openssh grub efibootmgr acl}"
+
+# Офлайн-установка из набора, встроенного в ISO (/opt/sg-offline): пакеты +
+# базы репозиториев + keyring собраны при сборке ISO (customize_airootfs.sh).
+# Работает полностью без интернета: pacman -S ставит из кеша по локальным
+# базам (без -y — версии ровно те, что были на момент сборки ISO).
+sg_offline_install() {
+  local t="$1"; shift
+  [[ -f /opt/sg-offline/READY && -d /opt/sg-offline/pkgs ]] || return 1
+  step 10 "Нет интернета — устанавливаю из офлайн-набора, встроенного в ISO..."
+  mkdir -p "$t/var/lib/pacman/sync" "$t/etc/pacman.d"
+  cp -a /opt/sg-offline/db/sync/. "$t/var/lib/pacman/sync/" 2>/dev/null || return 1
+  cp -a /opt/sg-offline/gnupg "$t/etc/pacman.d/gnupg" 2>/dev/null || return 1
+  cp /opt/sg-offline/pacman.conf "$t/etc/pacman.conf" 2>/dev/null || return 1
+  pacman --root "$t" --cachedir /opt/sg-offline/pkgs --noconfirm -S "$@" || return 1
+  return 0
+}
+
+step 10 "Установка пакетов (10–25 минут; если интернета нет — из ISO)..."
+has_net=0
+timeout 8 curl -fsI https://geo.mirror.pkgbuild.com/ >/dev/null 2>&1 && has_net=1
+if [[ "${has_net}" -eq 1 ]]; then
+  pacstrap -K "$TARGET" ${INSTALL_PKGS} || {
+    step 10 "Интернет нестабилен — пробую офлайн-набор из ISO..."
+    sg_offline_install "$TARGET" ${INSTALL_PKGS} \
+      || die "сбой установки пакетов (pacstrap). Проверьте интернет и лог."
+  }
+else
+  step 10 "Интернет не найден — ставлю из офлайн-набора, встроенного в ISO..."
+  sg_offline_install "$TARGET" ${INSTALL_PKGS} \
+    || die "сбой установки пакетов: нет интернета, а в ISO нет полного офлайн-набора (/opt/sg-offline). Подключите интернет или пересоберите ISO."
+fi
 
 step 85 "Генерация /etc/fstab..."
 genfstab -U "$TARGET" >> "$TARGET/etc/fstab" || die "не удалось сгенерировать fstab"
@@ -247,7 +268,7 @@ echo "\$HOSTNAME" > /etc/hostname
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.9.8"
+PRETTY_NAME="safegamingOS 0.10.0"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling
@@ -260,6 +281,12 @@ EOF
 useradd -m -G wheel,audio,video,input,storage,power,users,network,optical,rfkill -s /bin/bash "\$USERNAME" 2>/dev/null || true
 echo "\$USERNAME:\$PASS" | chpasswd
 echo "root:\$PASS" | chpasswd
+# Автовход в установленную ОС (никакого экрана логина): SDDM на Arch делает
+# автовход только если пользователь в группе autologin, nopasswdlogin —
+# страховочный вход с пустым паролем, если автовход вдруг не сработал.
+groupadd -r autologin 2>/dev/null || true
+groupadd -r nopasswdlogin 2>/dev/null || true
+usermod -aG autologin,nopasswdlogin "\$USERNAME" 2>/dev/null || true
 
 # --- рабочий стол пользователя: иконки комнат + обои (executable = KDE
 #     доверяет и не спрашивает «Allow launching») ---
@@ -271,11 +298,19 @@ chmod +x "/home/\$USERNAME/Desktop/"*.desktop 2>/dev/null || true
 cp /etc/skel/.config/autostart/sg-wallpaper.desktop "/home/\$USERNAME/.config/autostart/" 2>/dev/null || true
 chown -R "\$USERNAME:\$USERNAME" "/home/\$USERNAME/Desktop" "/home/\$USERNAME/.config" 2>/dev/null || true
 
-# --- сессия по умолчанию: Wayland (X11 остаётся в списке сессий как fallback) ---
+# --- сессия по умолчанию: автовход в рабочий стол + Wayland (X11 остаётся
+#     в списке сессий как fallback). SDDM на Arch: автовход требует группу
+#     autologin у пользователя (добавлена выше) — иначе будет экран логина. ---
 mkdir -p /etc/sddm.conf.d
-cat > /etc/sddm.conf.d/10-safegamingos.conf <<'EOF'
-# safegamingOS: Wayland-сессия по умолчанию — на X11 любой процесс сессии
-# видит весь экран и клавиатуру, на Wayland экран/ввод изолированы порталами.
+cat > /etc/sddm.conf.d/10-safegamingos.conf <<EOF
+# safegamingOS: автовход без пароля + Wayland-сессия по умолчанию — на X11
+# любой процесс сессии видит весь экран и клавиатуру, на Wayland экран/ввод
+# изолированы порталами.
+[Autologin]
+User=\$USERNAME
+Session=plasmawayland
+Relogin=true
+
 [General]
 Session=plasmawayland
 HaltCommand=/usr/bin/systemctl poweroff
