@@ -47,20 +47,38 @@ mkdir -p out
 # ---------------------------------------------------------------------------
 build_offline_bundle() {
   local dest="archiso/airootfs/opt/sg-offline"
-  local expected have
+  local expected have sp_out
   rm -rf "${dest}"
-  mkdir -p "${dest}/db" "${dest}/pkgs"
+  mkdir -p "${dest}/db/local" "${dest}/db/sync" "${dest}/pkgs"
   # shellcheck source=/dev/null
   source archiso/airootfs/usr/local/lib/sg-rooms/install-pkgs.conf
+  # Любой сбой pacman печатаем ГРОМКО (раньше `2>/dev/null || true` молча
+  # глотал ошибки — так в список попал несуществующий пакет, и сборка
+  # умирала без объяснений).
   echo ":: офлайн-набор: скачиваю базы репозиториев (свежий --dbpath)..."
-  pacman -Sy --dbpath "${dest}/db" --cachedir "${dest}/pkgs" --noconfirm || exit 1
-  expected="$(pacman -Sp --dbpath "${dest}/db" ${INSTALL_PKGS} 2>/dev/null | wc -l)"
+  if ! pacman -Sy --dbpath "${dest}/db" --cachedir "${dest}/pkgs" --noconfirm \
+    > /tmp/offline-sy.log 2>&1; then
+    echo ":: ОШИБКА: pacman -Sy не смог синхронизировать базы:" >&2
+    tail -n 15 /tmp/offline-sy.log >&2
+    exit 1
+  fi
+  if ! sp_out="$(pacman -Sp --dbpath "${dest}/db" ${INSTALL_PKGS} 2>&1)"; then
+    echo ":: ОШИБКА: pacman -Sp не смог собрать список (описка в install-pkgs.conf?):" >&2
+    echo "${sp_out}" | tail -n 15 >&2
+    exit 1
+  fi
+  expected="$(wc -l <<< "${sp_out}")"
   if [[ "${expected}" -lt 1 ]]; then
-    echo ":: ОШИБКА: не удалось посчитать список пакетов установки (INSTALL_PKGS)." >&2
+    echo ":: ОШИБКА: список пакетов установки пуст (INSTALL_PKGS)." >&2
     exit 1
   fi
   echo ":: офлайн-набор: качаю ${expected} пакетов + зависимости (~2-3 ГБ)..."
-  pacman -Sw --dbpath "${dest}/db" --cachedir "${dest}/pkgs" --noconfirm ${INSTALL_PKGS} || exit 1
+  if ! pacman -Sw --dbpath "${dest}/db" --cachedir "${dest}/pkgs" --noconfirm ${INSTALL_PKGS} \
+    > /tmp/offline-sw.log 2>&1; then
+    echo ":: ОШИБКА: pacman -Sw не смог скачать пакеты:" >&2
+    tail -n 15 /tmp/offline-sw.log >&2
+    exit 1
+  fi
   have="$(ls "${dest}/pkgs"/*.pkg.tar.* 2>/dev/null | wc -l)"
   if [[ "${have}" -lt "${expected}" ]]; then
     echo ":: ОШИБКА: офлайн-набор неполный (${have}/${expected}) — прерываю сборку." >&2
