@@ -4,7 +4,7 @@
 
 Live-система брендирована: DVD-логотип при загрузке, обои и тема KDE, фирменный терминал, стартовая страница Firefox. Инсталлятор открывается автоматически при загрузке live-образа (как в Windows 10) — установка без единой команды: выбор диска, форматирование, учётная запись, подкачка 16 ГБ, Wine/Steam по желанию.
 
-## Что уже есть (база v0.11.1)
+## Что уже есть (база v0.11.2)
 
 - **Собирается в загрузочный ISO** через `mkarchiso` (BIOS syslinux + UEFI systemd-boot).
 - **Загрузка со стилем DVD-логотипа** — plymouth-тема: слово `SAFEGAMINGOS` отскакивает от краёв экрана и меняет цвет (как DVD-логотип).
@@ -43,6 +43,7 @@ Live-система брендирована: DVD-логотип при загр
   - **Офлайн-установка из ISO (v0.10.0, починено в v0.11.1)**: инсталлятору не нужен интернет. При сборке ISO в `/opt/sg-offline` зашивается **полный набор пакетов** (все пакеты установки + зависимости), базы репозиториев и keyring. ⚠️ **В v0.10.0/0.11.0 набор в ISO фактически НЕ попадал**: он скачивался внутри chroot (`customize_airootfs.sh`), а сети в chroot нет (pacstrap качает на хосте) — `pacman -Sy` молча падал, и каждая сборка уезжала в релиз без офлайн-установки (установка без интернета падала на pacstrap). **v0.11.1**: набор скачивается **на хосте** (`build_iso.sh`, где pacman точно работает) в `archiso/airootfs/opt/sg-offline` и попадает в ISO через overlay; сборка теперь **прерывается**, если набора нет — молчаливый пропуск невозможен. Инсталлятор: есть интернет → обычный `pacstrap`; нет → установка из офлайн-набора ISO (`pacman -S` по локальным базам; дополнительно копируется mirrorlist в таргет — без него pacman падал на парсинге конфига).
   - **Автообновление (v0.11.0)**: сборка публикует **GitHub Release** (постоянная ссылка, качать без логина), а в системе в фоне работает `sg-update`: таймер проверяет релизы каждые 6 часов (и через 3 минуты после входа); нашёл новую версию → уведомление KDE с кнопкой «Обновить» → по клику открывается терминал, скачивается и ставится **слой safegamingOS** (новые sg-* скрипты, брендинг, конфиги, юниты — ваши данные не трогаются; перед заменой — резервная копия, откат в одну команду) и по желанию `pacman -Syu`. Команды: `sg-update check`, `sg-update download` (скачать новый ISO), `sg-update upgrade` (обновиться), `sg-update rollback` (откат).
   - **Релиз с частями ISO (v0.11.1)**: GitHub не кладёт в релизы файлы больше 2 ГБ, а ISO ~3 ГБ — поэтому релиз теперь содержит **части** `*.iso.part00/01/...` (по 1.4 ГБ) + `checksums.txt` + `merge.txt` (инструкция склейки: `cat` на Linux/macOS, `copy /b` на Windows). `sg-update download` скачивает и склеивает части сам.
+  - **Инсталлятор больше не падает на проверке прав конфига (v0.11.2)**: баг в bash-арифметике проверки прав (он считал `600` десятичным числом, а маску `022` — восьмеричной → `600 & 022 = 16 ≠ 0`) — установка через GUI падала с «конфиг не должен быть записываемым для группы/всех» на ЛЮБОМ конфиге, даже с правильными правами 0600 (жил с v0.9.8; реальный отказ). Фикс: явное восьмеричное основание (`8#…`), плюс root-помощник сам затягивает случайно открытые права до 600 вместо отказа; проверка владельца и строгий разбор конфига (без eval) сохранены. Починен и текстовый установщик (`sudo sg-install` в терминале), который раньше падал на проверке владельца файла (файл пишет root-скрипт, а проверка шла против `SUDO_USER`).
   - `sg-quarantine` / `sg-rooms` / `sg-setup` — карантин и восстановление комнат, список комнат, первичная настройка SafeGuard.
   - Всё логируется в SQLite-базу `/var/lib/sg-rooms/sg.db` и `/var/log/sg-rooms/events.log`.
 
@@ -53,12 +54,12 @@ ISO больше 2 ГБ, поэтому в релизе он лежит **час
 
 ```bash
 # 1. скачать все части (повтори для part00, part01, ...)
-curl -L -o safegamingos-0.11.1-x86_64.iso.part00 \
-  https://github.com/met4444m-collab/safegameos/releases/download/v0.11.1/safegamingos-0.11.1-x86_64.iso.part00
+curl -L -o safegamingos-0.11.2-x86_64.iso.part00 \
+  https://github.com/met4444m-collab/safegameos/releases/download/v0.11.2/safegamingos-0.11.2-x86_64.iso.part00
 
 # 2. склеить (Linux/macOS):
-cat safegamingos-0.11.1-x86_64.iso.part* > safegamingos-0.11.1-x86_64.iso
-#    Windows (cmd): copy /b safegamingos-0.11.1-x86_64.iso.part00+...part01 safegamingos-0.11.1-x86_64.iso
+cat safegamingos-0.11.2-x86_64.iso.part* > safegamingos-0.11.2-x86_64.iso
+#    Windows (cmd): copy /b safegamingos-0.11.2-x86_64.iso.part00+...part01 safegamingos-0.11.2-x86_64.iso
 
 # 3. проверка (по желанию)
 sha256sum -c checksums.txt
@@ -90,13 +91,13 @@ sg-update rollback     # откатить последнее обновлени�
 
 ```bash
 sudo pacman -S archiso
-sudo ./build_iso.sh          # скачает офлайн-набор (~2-3 ГБ) и соберёт out/safegamingos-0.11.1-x86_64.iso
+sudo ./build_iso.sh          # скачает офлайн-набор (~2-3 ГБ) и соберёт out/safegamingos-0.11.2-x86_64.iso
 ```
 
 Запись на флешку:
 
 ```bash
-sudo dd bs=4M if=out/safegamingos-0.11.1-x86_64.iso of=/dev/sdX status=progress oflag=sync
+sudo dd bs=4M if=out/safegamingos-0.11.2-x86_64.iso of=/dev/sdX status=progress oflag=sync
 ```
 
 ## Тест (сначала в виртуалке)
@@ -107,7 +108,7 @@ sudo dd bs=4M if=out/safegamingos-0.11.1-x86_64.iso of=/dev/sdX status=progress 
    # QEMU (пакеты qemu-desktop edk2-ovmf)
    qemu-system-x86_64 -enable-kvm -m 4096 -cpu host -smp 4 \
      -drive file=test.qcow2,if=virtio,format=qcow2 \
-     -cdrom out/safegamingos-0.11.1-x86_64.iso -boot d
+     -cdrom out/safegamingos-0.11.2-x86_64.iso -boot d
    ```
 
 2. Дождитесь рабочего стола — откроется сам, без логина и пароля (автовход `live`).

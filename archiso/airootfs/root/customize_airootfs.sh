@@ -16,7 +16,7 @@ ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 #     /usr/lib/os-release on Arch — write the real file there. ---
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.11.1"
+PRETTY_NAME="safegamingOS 0.11.2"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling
@@ -26,7 +26,7 @@ LOGO=safegamingos
 EOF
 # версия для автообновления (sg-update сверяет с релизами GitHub)
 mkdir -p /usr/share/safegamingos
-printf '%s\n' '0.11.1' > /usr/share/safegamingos/version
+printf '%s\n' '0.11.2' > /usr/share/safegamingos/version
 
 echo ":: safegamingOS customize_airootfs: live user"
 
