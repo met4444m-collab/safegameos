@@ -111,16 +111,48 @@ cmd_download() { # $1 = iso|files
     url="$(latest_asset_url "${name}")"
     dir="${DL_ROOT}"
     mkdir -p "${dir}"
-  else
-    name="${ISO_PREFIX}-${latest}-x86_64.iso"
-    url="$(latest_asset_url "${name}")"
-    dir="${HOME:-/root}/Downloads"
-    mkdir -p "${dir}"
+    [[ -n "${url}" ]] || { echo "Артефакт ${name} не найден в релизе v${latest}." >&2; return 1; }
+    echo "Скачиваю ${name} (v${latest})..."
+    curl -fL --progress-bar -o "${dir}/${name}" "${url}" || { echo "Ошибка скачивания." >&2; return 1; }
+    echo "✓ ${dir}/${name}"
+    return 0
   fi
-  [[ -n "${url}" ]] || { echo "Артефакт ${name} не найден в релизе v${latest}." >&2; return 1; }
-  echo "Скачиваю ${name} (v${latest})..."
-  curl -fL --progress-bar -o "${dir}/${name}" "${url}" || { echo "Ошибка скачивания." >&2; return 1; }
-  echo "✓ ${dir}/${name}"
+  # ISO: целиком, если релиз отдаёт один файл; иначе — части .partNN + склейка
+  name="${ISO_PREFIX}-${latest}-x86_64.iso"
+  dir="${HOME:-/root}/Downloads"
+  mkdir -p "${dir}"
+  url="$(latest_asset_url "${name}")"
+  if [[ -n "${url}" ]]; then
+    echo "Скачиваю ${name} (v${latest})..."
+    curl -fL --progress-bar -o "${dir}/${name}" "${url}" || { echo "Ошибка скачивания." >&2; return 1; }
+    echo "✓ ${dir}/${name}"
+    return 0
+  fi
+  local i part url tmp="" out="${dir}/${name}"
+  local -a parts=()
+  echo "Скачиваю части ${name}.partNN (v${latest})..."
+  tmp="$(mktemp -d)"
+  for i in $(seq -w 0 99); do
+    part="${name}.part${i}"
+    url="$(latest_asset_url "${part}")"
+    [[ -n "${url}" ]] || break
+    curl -fL --progress-bar -o "${tmp}/${i}" "${url}" \
+      || { rm -rf "${tmp}"; echo "Ошибка скачивания части ${part}." >&2; return 1; }
+    parts+=("${tmp}/${i}")
+  done
+  if [[ ${#parts[@]} -eq 0 ]]; then
+    rm -rf "${tmp}"
+    echo "В релизе v${latest} нет ISO (ни целиком, ни частями)." >&2
+    return 1
+  fi
+  echo "Склеиваю части → ${out}"
+  if ! cat "${parts[@]}" > "${out}"; then
+    rm -rf "${tmp}"
+    echo "Ошибка склейки." >&2
+    return 1
+  fi
+  rm -rf "${tmp}"
+  echo "✓ ${out}"
 }
 
 apply_payload() { # $1 файл слоя, $2 старая версия, $3 новая версия

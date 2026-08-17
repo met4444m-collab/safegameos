@@ -3,6 +3,10 @@ bun.lock
 work/
 out/
 dist/
+
+# офлайн-набор пакетов (~2-3 ГБ), который build_iso.sh скачивает в airootfs
+# при каждой сборке — в git не коммитим
+archiso/airootfs/opt/
 *.iso
 *.sig
 tsconfig.tsbuildinfo

@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-ISO_VERSION="0.11.0"
+ISO_VERSION="0.11.1"
 
 if [[ ${EUID} -ne 0 ]]; then
   echo ":: must be run as root (mkarchiso needs root)" >&2
@@ -34,6 +34,45 @@ fi
 
 rm -rf out work
 mkdir -p out
+
+# ---------------------------------------------------------------------------
+# Офлайн-набор для установки без интернета.
+#
+# ВАЖНО: набирается НА ХОСТЕ (build machine), а не внутри chroot: во время
+# customize_airootfs.sh сети в chroot нет (pacstrap качает на хосте), поэтому
+# `pacman -Sy` там мгновенно падал, набор молча не создавался, и НИ ОДИН ISO
+# до v0.11.1 не содержал офлайн-установку. Здесь pacman работает (тот же
+# контейнер только что качал пакеты), результат кладётся в
+# archiso/airootfs/opt/sg-offline и попадает в ISO через overlay.
+# ---------------------------------------------------------------------------
+build_offline_bundle() {
+  local dest="archiso/airootfs/opt/sg-offline"
+  local expected have
+  rm -rf "${dest}"
+  mkdir -p "${dest}/db" "${dest}/pkgs"
+  # shellcheck source=/dev/null
+  source archiso/airootfs/usr/local/lib/sg-rooms/install-pkgs.conf
+  echo ":: офлайн-набор: скачиваю базы репозиториев (свежий --dbpath)..."
+  pacman -Sy --dbpath "${dest}/db" --cachedir "${dest}/pkgs" --noconfirm || exit 1
+  expected="$(pacman -Sp --dbpath "${dest}/db" ${INSTALL_PKGS} 2>/dev/null | wc -l)"
+  if [[ "${expected}" -lt 1 ]]; then
+    echo ":: ОШИБКА: не удалось посчитать список пакетов установки (INSTALL_PKGS)." >&2
+    exit 1
+  fi
+  echo ":: офлайн-набор: качаю ${expected} пакетов + зависимости (~2-3 ГБ)..."
+  pacman -Sw --dbpath "${dest}/db" --cachedir "${dest}/pkgs" --noconfirm ${INSTALL_PKGS} || exit 1
+  have="$(ls "${dest}/pkgs"/*.pkg.tar.* 2>/dev/null | wc -l)"
+  if [[ "${have}" -lt "${expected}" ]]; then
+    echo ":: ОШИБКА: офлайн-набор неполный (${have}/${expected}) — прерываю сборку." >&2
+    exit 1
+  fi
+  cp -a /etc/pacman.d/gnupg "${dest}/gnupg"
+  cp /etc/pacman.conf "${dest}/pacman.conf"
+  cp /etc/pacman.d/mirrorlist "${dest}/mirrorlist" 2>/dev/null || true
+  touch "${dest}/READY"
+  echo ":: офлайн-набор готов: ${have} пакетов, $(du -sh "${dest}/pkgs" | cut -f1)"
+}
+build_offline_bundle
 
 echo ":: building safegamingOS ${ISO_VERSION} ISO (this takes a while)…"
 mkarchiso -v -w "$(pwd)/work" -o "$(pwd)/out" "$(pwd)/archiso"

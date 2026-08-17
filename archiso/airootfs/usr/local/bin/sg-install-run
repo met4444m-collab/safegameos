@@ -212,6 +212,9 @@ sg_offline_install() {
   cp -a /opt/sg-offline/db/sync/. "$t/var/lib/pacman/sync/" 2>/dev/null || return 1
   cp -a /opt/sg-offline/gnupg "$t/etc/pacman.d/gnupg" 2>/dev/null || return 1
   cp /opt/sg-offline/pacman.conf "$t/etc/pacman.conf" 2>/dev/null || return 1
+  # pacman.conf в таргете содержит `Include = /etc/pacman.d/mirrorlist` — без
+  # файла pacman падает на парсинге конфига (латентный баг офлайн-пути)
+  cp /opt/sg-offline/mirrorlist "$t/etc/pacman.d/mirrorlist" 2>/dev/null || true
   pacman --root "$t" --cachedir /opt/sg-offline/pkgs --noconfirm -S "$@" || return 1
   return 0
 }
@@ -274,7 +277,7 @@ echo "\$HOSTNAME" > /etc/hostname
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.11.0"
+PRETTY_NAME="safegamingOS 0.11.1"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling

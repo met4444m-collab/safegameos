@@ -16,7 +16,7 @@ ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 #     /usr/lib/os-release on Arch — write the real file there. ---
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.11.0"
+PRETTY_NAME="safegamingOS 0.11.1"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling
@@ -26,7 +26,7 @@ LOGO=safegamingos
 EOF
 # версия для автообновления (sg-update сверяет с релизами GitHub)
 mkdir -p /usr/share/safegamingos
-printf '%s\n' '0.11.0' > /usr/share/safegamingos/version
+printf '%s\n' '0.11.1' > /usr/share/safegamingos/version
 
 echo ":: safegamingOS customize_airootfs: live user"
 
@@ -97,33 +97,22 @@ fi
 
 echo ":: safegamingOS customize_airootfs: offline install bundle"
 
-# --- Офлайн-установка: чтобы инсталлятор работал БЕЗ интернета, в ISO
-#     зашивается полный набор пакетов + базы репозиториев + keyring в
-#     /opt/sg-offline. Трюк: свежий --dbpath (/opt/sg-offline/db) означает,
-#     что pacman не считает ни один пакет установленным, поэтому `-Sw`
-#     скачивает ВСЕ пакеты списка И их зависимости — даже если те же пакеты
-#     уже стоят в live-системе (их архивы в ISO не попадают иначе).
-#     Интернет нужен только при СБОРКЕ ISO (GitHub Actions), пользователю —
-#     никогда: инсталлятор ставит из /opt/sg-offline по локальным базам. ---
-if [[ -s /usr/local/lib/sg-rooms/install-pkgs.conf ]]; then
-  # shellcheck source=/dev/null
-  source /usr/local/lib/sg-rooms/install-pkgs.conf
-  mkdir -p /opt/sg-offline/db /opt/sg-offline/pkgs
-  pacman -Sy --dbpath /opt/sg-offline/db --cachedir /opt/sg-offline/pkgs --noconfirm >/dev/null 2>&1 || true
-  if ! expected=$(pacman -Sp --dbpath /opt/sg-offline/db $INSTALL_PKGS 2>/dev/null | wc -l); then expected=0; fi
-  if [[ "${expected}" -gt 0 ]]; then
-    pacman -Sw --dbpath /opt/sg-offline/db --cachedir /opt/sg-offline/pkgs --noconfirm $INSTALL_PKGS >/dev/null 2>&1 || true
-    if ! have=$(ls /opt/sg-offline/pkgs/*.pkg.tar.* 2>/dev/null | wc -l); then have=0; fi
-    if [[ "${have}" -ge "${expected}" ]]; then
-      cp -a /etc/pacman.d/gnupg /opt/sg-offline/gnupg 2>/dev/null || true
-      cp /etc/pacman.conf /opt/sg-offline/pacman.conf 2>/dev/null || true
-      touch /opt/sg-offline/READY
-      echo ":: офлайн-набор готов: ${have} пакетов, $(du -sh /opt/sg-offline/pkgs 2>/dev/null | cut -f1)"
-    else
-      echo ":: ВНИМАНИЕ: офлайн-набор неполный (${have}/${expected}) — ISO останется онлайн-инсталлятором"
-    fi
-  fi
+# --- Офлайн-набор для установки без интернета скачивается НА ХОСТЕ
+#     (build_iso.sh) в archiso/airootfs/opt/sg-offline и попадает сюда через
+#     overlay airootfs. В chroot pacman без сети (pacstrap качает на хосте),
+#     поэтому здесь — только проверка: набора нет → ISO бесполезен для
+#     офлайн-установки (главная фича), сборку прерываем громко. ---
+if [[ -f /opt/sg-offline/READY && -d /opt/sg-offline/pkgs ]]; then
+  echo ":: офлайн-набор: $(ls /opt/sg-offline/pkgs/*.pkg.tar.* 2>/dev/null | wc -l) пакетов, $(du -sh /opt/sg-offline/pkgs 2>/dev/null | cut -f1)"
+else
+  echo ":: ОШИБКА: офлайн-набор /opt/sg-offline не найден (нет READY/pkgs)." >&2
+  echo ":: Он создаётся на хосте в build_iso.sh (build_offline_bundle)." >&2
+  echo ":: Сборка прервана — не выпускаем ISO без офлайн-установки." >&2
+  exit 1
 fi
+# кеш pacstrap в live-системе не нужен (дублирует офлайн-набор) — убираем,
+# чтобы не раздувать squashfs и не тратить диски раннера
+rm -rf /var/cache/pacman/pkg/* 2>/dev/null || true
 
 echo ":: safegamingOS customize_airootfs: done"
 exit 0

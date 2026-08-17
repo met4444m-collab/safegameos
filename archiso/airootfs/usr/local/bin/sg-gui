@@ -395,7 +395,7 @@ class MainWin(QMainWindow):
         self.setCentralWidget(tabs)
         self.statusBar().showMessage(
             "Привилегированные действия выполняются через pkexec (wheel — без пароля). "
-            "Логин live/live в live-системе тоже подходит.")
+            "Вход в систему без пароля (автовход).")
 
     def av_live(self):
         ok, out = run(pkexec(["sg-av", "live"]), timeout=30)

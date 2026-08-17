@@ -56,20 +56,37 @@ jobs:
 
       # Релиз = постоянная ссылка для скачивания командой (curl -L ...)
       # и источник для автообновления sg-update (пакеты-слой + ISO).
+      # GitHub кладёт в релизы файлы только до 2 ГБ, а ISO ~3 ГБ, поэтому
+      # ISO режется на части по 1.4 ГБ + контрольные суммы + инструкция склейки.
+      # (sg-update download собирает части сам; вручную: cat / copy /b)
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           VER="$VER"
           REPO="${{ github.repository }}"
-          FILES=(out/safegamingos-*.iso out/safegamingos-files-*.tar.zst)
+          ISO="$(ls out/safegamingos-*.iso | head -n1)"
+          BASE="${ISO%.iso}"
+          rm -f "${BASE}".iso.part*
+          echo ":: split ${ISO} на части по 1400M"
+          split -b 1400M -d -a 2 "${ISO}" "${BASE}.iso.part"
+          (cd out && sha256sum "$(basename "${ISO}")") > out/checksums.txt
+          BASEB="$(basename "${BASE}")"
+          WINCMD="copy /b $(cd out && ls -1 *.iso.part* | tr '\n' '+' | sed 's/+$//') ${BASEB}.iso"
+          { echo "safegamingOS v$VER — скачайте ВСЕ части .iso.partNN и склейте:";
+            echo "  Linux/macOS: cat ${BASEB}.iso.part* > ${BASEB}.iso";
+            echo "  Windows (cmd): ${WINCMD}";
+            echo "Проверка: sha256sum -c checksums.txt";
+            echo "Автообновление в системе само скачивает и склеивает: sg-update download"; } > out/merge.txt
+          ASSETS=(out/safegamingos-files-*.tar.zst "${BASE}".iso.part* out/checksums.txt out/merge.txt)
           if gh release view "v$VER" --repo "$REPO" >/dev/null 2>&1; then
-            gh release upload "v$VER" "${FILES[@]}" --clobber --repo "$REPO"
+            gh release upload "v$VER" "${ASSETS[@]}" --clobber --repo "$REPO"
           else
-            gh release create "v$VER" "${FILES[@]}" \
+            gh release create "v$VER" "${ASSETS[@]}" \
               --repo "$REPO" \
               --title "safegamingOS $VER" \
-              --notes "Автосборка safegamingOS v$VER — ISO для установки с флешки + слой обновления для sg-update."
+              --notes "Автосборка safegamingOS v$VER — ISO (частями, из-за лимита 2 ГБ на файл) + слой обновления для sg-update."
           fi
 
       # if: always() — ISO-артефакт сохраняется даже если публикация релиза
