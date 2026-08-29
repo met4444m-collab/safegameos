@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+# freeze-bg — SafeGameOS: заморозка фоновых процессов
+#
+# Запрещает запуск неразрешённых фоновых процессов.
+# Только системные процессы и процессы из белого списка могут работать.
+#
+# freeze-bg enable   — включить мониторинг
+# freeze-bg disable  — выключить мониторинг
+# freeze-bg add      — добавить процесс в белый список
+# freeze-bg remove   — убрать из белого списка
+# freeze-bg status   — статус
+# freeze-bg list     — показать белый список
+# freeze-bg lock     — заблокировать автозагрузку
+# freeze-bg unlock   — разблокировать автозагрузку
+# freeze-bg log      — показать лог замороженных
+
+set -euo pipefail
+
+CFG="/etc/freeze-bg/whitelist.conf"
+LOCK_DIR="/etc/freeze-bg/locked"
+LOG="/var/log/freeze-bg.log"
+PIDFILE="/run/freeze-bg-monitor.pid"
+SERVICE="freeze-bg.service"
+
+# Цвета
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+die()  { echo -e "${RED}✗ $*${NC}" >&2; exit 1; }
+info() { echo -e "${CYAN}→${NC} $*"; }
+ok()   { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}!${NC} $*"; }
+
+# --- Белый список: системные процессы, которые ВСЕГДА разрешены ---
+SYSTEM_WHITELIST=(
+    # systemd и init
+    systemd systemd-journald systemd-logind systemd-udevd
+    systemd-resolved systemd-timesyncd systemd-networkd
+    dbus-daemon dbus-broker
+    # ядро /proc
+    kthreadd ksoftirqd migration rcu_sched
+    watchdog hpwatchdog
+    # KDE / Wayland / дисплей
+    plasmashell kwin_wayland kwin_x11
+    Xwayland Xorg
+    kscreenlocker_greet sddm
+    pipewire pipewire-pulse wireplumber
+    pulseaudio
+    kactivitymanagerd
+    polkit-kde-authentication-agent-1
+    kded5 kglobalaccel5
+    # сеть
+    NetworkManager wpa_supplicant dhcpcd
+    # безопасность
+    firejail sg-room-run sg-watch sg-track sg-av
+    clamd freshclam
+    nftables
+    # логирование
+    rsyslogd syslog-ng
+    # freeze-bg сам
+    freeze-bg freeze-bg-monitor
+    # systemd юниты
+    (passed via cgroup, not process name)
+)
+
+# --- Загрузка белого списка из конфига ---
+load_whitelist() {
+    local list=("${SYSTEM_WHITELIST[@]}")
+    if [[ -f "$CFG" ]]; then
+        while IFS= read -r line; do
+            # пропускаем комментарии и пустые
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// }" ]] && continue
+            list+=("$line")
+        done < "$CFG"
+    fi
+    echo "${list[@]}"
+}
+
+# --- Проверка: процесс разрешён? ---
+is_allowed() {
+    local proc_name="$1"
+    local whitelist
+    whitelist=($(load_whitelist))
+    
+    for pattern in "${whitelist[@]}"; do
+        # точное совпадение или wildcard
+        if [[ "$proc_name" == "$pattern" ]] || [[ "$pattern" == *"*"* && "$proc_name" == ${pattern//\*/} ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# --- Команды ---
+cmd_enable() {
+    [[ $EUID -eq 0 ]] || die "нужен root: sudo freeze-bg enable"
+    systemctl enable "$SERVICE" 2>/dev/null
+    systemctl start "$SERVICE" 2>/dev/null
+    ok "freeze-bg включён — фоновые процессы заморожены"
+    echo "  Белый список: $CFG"
+    echo "  Лог: $LOG"
+}
+
+cmd_disable() {
+    [[ $EUID -eq 0 ]] || die "нужен root: sudo freeze-bg disable"
+    systemctl stop "$SERVICE" 2>/dev/null || true
+    systemctl disable "$SERVICE" 2>/dev/null || true
+    ok "freeze-bg выключен"
+}
+
+cmd_add() {
+    [[ $EUID -eq 0 ]] || die "нужен root: sudo freeze-bg add <процесс>"
+    local proc="${1:-}"
+    [[ -z "$proc" ]] && die "укажи имя процесса: freeze-bg add firefox"
+    
+    mkdir -p "$(dirname "$CFG")"
+    
+    # проверяем нет ли уже
+    if grep -qxF "$proc" "$CFG" 2>/dev/null; then
+        warn "$proc уже в белом списке"
+        return 0
+    fi
+    
+    echo "$proc" >> "$CFG"
+    ok "добавлен в белый список: $proc"
+    echo "  Перезапустиfreeze-bg: sudo freeze-bg restart 2>/dev/null || sudo freeze-bg disable && sudo freeze-bg enable"
+}
+
+cmd_remove() {
+    [[ $EUID -eq 0 ]] || die "нужен root: sudo freeze-bg remove <процесс>"
+    local proc="${1:-}"
+    [[ -z "$proc" ]] && die "укажи имя процесса: freeze-bg remove firefox"
+    
+    if [[ ! -f "$CFG" ]]; then
+        die "белый список пуст"
+    fi
+    
+    if ! grep -qxF "$proc" "$CFG" 2>/dev/null; then
+        die "$proc не найден в белом списке"
+    fi
+    
+    sed -i "/^${proc}$/d" "$CFG"
+    ok "убран из белого списка: $proc"
+}
+
+cmd_list() {
+    echo -e "${CYAN}=== Белый список фоновых процессов ===${NC}"
+    echo
+    
+    echo -e "${YELLOW}Системные (всегда разрешены):${NC}"
+    for p in "${SYSTEM_WHITELIST[@]}"; do
+        [[ "$p" == *"passed via"* ]] && continue
+        echo "  $p"
+    done
+    
+    echo
+    echo -e "${YELLOW}Пользовательские (из $CFG):${NC}"
+    if [[ -f "$CFG" ]]; then
+        while IFS= read -r line; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// }" ]] && continue
+            echo "  $line"
+        done < "$CFG"
+    else
+        echo "  (пусто — добавь: sudo freeze-bg add <процесс>)"
+    fi
+}
+
+cmd_status() {
+    echo -e "${CYAN}=== freeze-bg статус ===${NC}"
+    
+    if systemctl is-active "$SERVICE" &>/dev/null; then
+        echo -e "  Статус: ${GREEN}активен${NC}"
+    else
+        echo -e "  Статус: ${RED}неактивен${NC}"
+    fi
+    
+    if systemctl is-enabled "$SERVICE" &>/dev/null; then
+        echo -e "  Автозапуск: ${GREEN}включён${NC}"
+    else
+        echo -e "  Автозапуск: ${YELLOW}выключен${NC}"
+    fi
+    
+    # заблокированные автозагрузки
+    echo
+    echo -e "${CYAN}=== Заблокированные автозагрузки ===${NC}"
+    if [[ -d "$LOCK_DIR" ]]; then
+        for f in "$LOCK_DIR"/*.locked; do
+            [[ -f "$f" ]] || continue
+            local orig="${f%.locked}"
+            echo "  🔒 $(basename "$orig")"
+        done
+    else
+        echo "  (нет заблокированных)"
+    fi
+    
+    echo
+    echo -e "${CYAN}=== Замороженные сегодня ===${NC}"
+    if [[ -f "$LOG" ]]; then
+        local count=$(grep -c "FROZEN" "$LOG" 2>/dev/null || echo "0")
+        echo "  Убито процессов: $count"
+        echo "  Последние:"
+        tail -5 "$LOG" 2>/dev/null | sed 's/^/    /'
+    else
+        echo "  (лог пуст)"
+    fi
+}
+
+cmd_lock() {
+    [[ $EUID -eq 0 ]] || die "нужен root: sudo freeze-bg lock"
+    
+    local dirs=(
+        "/etc/xdg/autostart"
+        "/home/*/.config/autostart"
+    )
+    
+    mkdir -p "$LOCK_DIR"
+    local count=0
+    
+    for pattern in "${dirs[@]}"; do
+        for dir in $pattern; do
+            [[ -d "$dir" ]] || continue
+            for f in "$dir"/*.desktop; do
+                [[ -f "$f" ]] || continue
+                local basename_f=$(basename "$f")
+                local lockfile="$LOCK_DIR/${basename_f}.locked"
+                
+                if [[ -f "$lockfile" ]]; then
+                    continue  # уже заблокирован
+                fi
+                
+                # копируем оригинальный .desktop в locked/
+                cp "$f" "$lockfile"
+                # делаем файл immutable (нельзя изменить/удалить/переименовать)
+                chattr +i "$f" 2>/dev/null || true
+                # заменяем содержимое на заглушку
+                cat > "$f" << DESKTOP_EOF
+[Desktop Entry]
+Type=Application
+Name=$(basename "$f" .desktop)
+Comment=Заблокировано freeze-bg
+Hidden=true
+NoDisplay=true
+X-GNOME-Autostart-enabled=false
+DESKTOP_EOF
+                ((count++))
+            done
+        done
+    done
+    
+    ok "Заблокировано автозагрузок: $count"
+    echo "  Файлы в $LOCK_DIR"
+    echo "  Для разблокировки: sudo freeze-bg unlock"
+}
+
+cmd_unlock() {
+    [[ $EUID -eq 0 ]] || die "нужен root: sudo freeze-bg unlock"
+    
+    if [[ ! -d "$LOCK_DIR" ]]; then
+        die "нет заблокированных файлов"
+    fi
+    
+    local count=0
+    for f in "$LOCK_DIR"/*.locked; do
+        [[ -f "$f" ]] || continue
+        local orig_name=$(basename "${f%.locked}")
+        
+        # ищем куда восстановить
+        for dir in /etc/xdg/autostart /home/*/.config/autostart; do
+            [[ -d "$dir" ]] || continue
+            local target="$dir/$orig_name"
+            if [[ -f "$target" ]] || [[ ! -f "$target" ]]; then
+                # снимаем immutable
+                chattr -i "$target" 2>/dev/null || true
+                # восстанавливаем
+                cp "$f" "$target"
+                ((count++))
+                break
+            fi
+        done
+    done
+    
+    rm -rf "$LOCK_DIR"
+    ok "Разблокировано автозагрузок: $count"
+}
+
+cmd_log() {
+    if [[ ! -f "$LOG" ]]; then
+        echo "Лог пуст"
+        return 0
+    fi
+    
+    local filter="${1:-}"
+    if [[ -n "$filter" ]]; then
+        grep -i "$filter" "$LOG"
+    else
+        tail -50 "$LOG"
+    fi
+}
+
+cmd_restart() {
+    cmd_disable 2>/dev/null
+    cmd_enable
+}
+
+# --- ГЛАВНОЕ ---
+case "${1:-help}" in
+    enable)   cmd_enable ;;
+    disable)  cmd_disable ;;
+    add)      cmd_add "${2:-}" ;;
+    remove)   cmd_remove "${2:-}" ;;
+    list)     cmd_list ;;
+    status)   cmd_status ;;
+    lock)     cmd_lock ;;
+    unlock)   cmd_unlock ;;
+    log)      cmd_log "${2:-}" ;;
+    restart)  cmd_restart ;;
+    help|--help|-h)
+        echo "freeze-bg — заморозка фоновых процессов SafeGameOS"
+        echo
+        echo "Команды:"
+        echo "  enable    — включить мониторинг"
+        echo "  disable   — выключить мониторинг"
+        echo "  add       — добавить процесс в белый список"
+        echo "  remove    — убрать из белого списка"
+        echo "  list      — показать белый список"
+        echo "  status    — статус системы"
+        echo "  lock      — заблокировать автозагрузку"
+        echo "  unlock    — разблокировать автозагрузку"
+        echo "  log       — показать лог"
+        echo "  restart   — перезапустить мониторинг"
+        echo
+        echo "Примеры:"
+        echo "  sudo freeze-bg enable"
+        echo "  sudo freeze-bg add firefox"
+        echo "  sudo freeze-bg add discord"
+        echo "  sudo freeze-bg lock"
+        ;;
+    *)
+        die "неизвестная команда: $1 (попробуй freeze-bg help)"
+        ;;
+esac

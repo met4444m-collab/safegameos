@@ -128,10 +128,25 @@ rm -f "$CONF"
 # диск должен быть ЦЕЛЫМ диском, а не разделом
 [[ "$(lsblk -dno TYPE "$DISK" 2>/dev/null)" == "disk" ]] \
   || die "указан не целый диск: $DISK (нужен /dev/sda, /dev/nvme0n1 и т.п.)"
-# защита от стирания рабочей системы: любой смонтированный раздел этого диска
-# (в т.ч. собственный корень, /boot, /home live-системы) → отмена
-if mount 2>/dev/null | grep -qE "^${DISK}[p0-9]*[[:space:]]+on "; then
-  die "диск $DISK уже смонтирован (на нём работает система?) — отмена"
+# Если разделы этого диска смонтированы от предыдущей неудачной попытки —
+# размонтируем (сначала потомков, потом корень), чтобы parted/mkfs не падали.
+# Если это РЕАЛЬНЫЙ корень текущей системы — отказываемся (защита от стирания
+# рабочей системы).
+_mounted_parts=$(mount 2>/dev/null | grep -oE "^${DISK}[p0-9]*" || true)
+if [[ -n "${_mounted_parts}" ]]; then
+  # Проверяем, не является ли один из смонтированных разделов текущим корнем
+  _root_dev=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+  if echo "${_mounted_parts}" | grep -q "^${_root_dev%%[0-9]*}"; then
+    die "диск $DISK содержит корень текущей системы — отмена"
+  fi
+  step 1 "Размонтирую остатки предыдущей попытки..."
+  # Размонтируем потомков раньше родителей (boot перед root)
+  umount -Rl /mnt 2>/dev/null || true
+  # Также пробуем размонтировать конкретные разделы
+  for _p in ${_mounted_parts}; do
+    umount -l "${_p}" 2>/dev/null || true
+  done
+  udevadm settle 2>/dev/null || sleep 1
 fi
 [[ "$HOSTNAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$ ]] \
   || die "неверное имя компьютера: $HOSTNAME"
@@ -153,6 +168,28 @@ esac
 
 # ---------------------------------------------------------------------------
 step 2 "Разметка диска $DISK (GPT). Весь диск будет стёрт..."
+# Очищаем диск: dd стирает первые/последние 10 МБ (GPT-заголовок + резерв),
+# после чего parted создаёт свежую таблицу. dd работает даже если wipefs
+# падает с «Device or resource busy» (умный lazy-unmount не всегда отпускает
+# устройство мгновенно).
+osector=$(lsblk -dno SIZE "$DISK" 2>/dev/null | head -1)
+osize_bytes=$(lsblk -dbno SIZE "$DISK" 2>/dev/null | head -1)
+# Если не удалось определить размер — стираем 10 МБ с начала и конца
+if [[ -n "${osize_bytes}" && "${osize_bytes}" -gt 20971520 ]]; then
+  last_skip=$(( (osize_bytes - 10485760) / 512 ))
+  dd if=/dev/zero of="$DISK" bs=1M count=10 conv=fsync 2>/dev/null || true
+  dd if=/dev/zero of="$DISK" bs=512 seek="${last_skip}" count=20480 conv=fsync 2>/dev/null || true
+else
+  dd if=/dev/zero of="$DISK" bs=1M count=10 conv=fsync 2>/dev/null || true
+fi
+# Дополнительно: wipefs/sgdisk если доступны (на случай если dd не стёр всё)
+if command -v wipefs >/dev/null 2>&1; then
+  wipefs -a "$DISK" 2>/dev/null || true
+fi
+if command -v sgdisk >/dev/null 2>&1; then
+  sgdisk --zap-all "$DISK" 2>/dev/null || true
+fi
+udevadm settle 2>/dev/null || sleep 1
 parted -s "$DISK" mklabel gpt || die "не удалось создать GPT-разметку"
 parted -s "$DISK" mkpart ESP fat32 1MiB 513MiB || die "не удалось создать ESP-раздел"
 parted -s "$DISK" set 1 esp on || die "не удалось пометить ESP как загрузочный"
@@ -216,21 +253,64 @@ source /usr/local/lib/sg-rooms/install-pkgs.conf 2>/dev/null || true
 INSTALL_PKGS="${INSTALL_PKGS:-base linux linux-firmware intel-ucode amd-ucode networkmanager iwd plymouth plasma-meta plasma-nm plasma-pa sddm sddm-kcm kscreen konsole dolphin kate gwenview spectacle xdg-utils xdg-user-dirs xdg-desktop-portal xdg-desktop-portal-kde power-profiles-daemon ttf-dejavu noto-fonts noto-fonts-cjk pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils sof-firmware mesa libva-intel-driver intel-media-driver vulkan-intel vulkan-radeon obs-studio prismlauncher jre-openjdk firefox firejail xorg-server xorg-server-xephyr xorg-xauth xorg-xwayland nftables sqlite inotify-tools python python-pyqt6 polkit polkit-kde-agent apparmor clamav dialog sudo vim git curl wget reflector rsync openssh grub efibootmgr acl}"
 
 # Офлайн-установка из набора, встроенного в ISO (/opt/sg-offline): пакеты +
-# базы репозиториев + keyring собраны при сборке ISO (customize_airootfs.sh).
-# Работает полностью без интернета: pacman -S ставит из кеша по локальным
-# базам (без -y — версии ровно те, что были на момент сборки ISO).
+# базы репозиториев + keyring собраны при сборке ISO (build_iso.sh →
+# archiso/airootfs/opt/sg-offline). Работает полностью без интернета:
+# pacman -S ставит из кеша по локальным базам (без -y — версии ровно те,
+# что были на момент сборки ISO).
+#
+# ВАЖНО: перед установкой монтируем псевдо-ФС в таргет (как это делает
+# pacstrap). Без /proc, /sys, /dev install-скрипты и хуки пакетов
+# (linux → mkinitcpio, archlinux-keyring → pacman-key, grub и т.п.) падают
+# внутри chroot, и pacman прерывает транзакцию — так live-установка без
+# интернета падала с «сбой установки пакетов». Размонтирование — общий
+# cleanup() (umount -R) из trap.
 sg_offline_install() {
   local t="$1"; shift
   [[ -f /opt/sg-offline/READY && -d /opt/sg-offline/pkgs ]] || return 1
-  step 10 "Нет интернета — устанавливаю из офлайн-набора, встроенного в ISO..."
-  mkdir -p "$t/var/lib/pacman/sync" "$t/etc/pacman.d"
+  step 10 "Устанавливаю из офлайн-набора, встроенного в ISO..."
+  mkdir -p "$t/var/lib/pacman/sync" "$t/etc/pacman.d" \
+           "$t/proc" "$t/sys" "$t/dev/pts" "$t/dev/shm" "$t/run"
   cp -a /opt/sg-offline/db/sync/. "$t/var/lib/pacman/sync/" 2>/dev/null || return 1
   cp -a /opt/sg-offline/gnupg "$t/etc/pacman.d/gnupg" 2>/dev/null || return 1
-  cp /opt/sg-offline/pacman.conf "$t/etc/pacman.conf" 2>/dev/null || return 1
-  # pacman.conf в таргете содержит `Include = /etc/pacman.d/mirrorlist` — без
-  # файла pacman падает на парсинге конфига (латентный баг офлайн-пути)
+  # Генерируем САМОСТОЯТЕЛЬНЫЙ pacman.conf для офлайн-установки:
+  # прописываем Server напрямую, без Include (Include резолвится
+  # относительно хоста, а не таргета — pacman не видит серверов и
+  # падает с «no servers configured for repository: core»).
+  local _mirror
+  _mirror=$(head -1 /opt/sg-offline/mirrorlist 2>/dev/null | sed 's/^Server\s*=\s*//')
+  [[ -n "$_mirror" ]] || _mirror="https://geo.mirror.pkgbuild.com/$repo/os/$arch"
+  cat > "$t/etc/pacman.conf" <<PACCONF
+[options]
+Architecture = auto
+Color
+CheckSpace
+ParallelDownloads = 5
+SigLevel = Required DatabaseOptional
+LocalFileSigLevel = Optional
+[core]
+Server = $_mirror
+[extra]
+Server = $_mirror
+PACCONF
   cp /opt/sg-offline/mirrorlist "$t/etc/pacman.d/mirrorlist" 2>/dev/null || true
-  pacman --root "$t" --cachedir /opt/sg-offline/pkgs --noconfirm -S "$@" || return 1
+  # псевдо-ФС как в pacstrap (ошибки монтирования не фатальны)
+  mount -t proc proc "$t/proc" 2>/dev/null || true
+  mount -t sysfs sys "$t/sys" 2>/dev/null || true
+  mount -t devtmpfs dev "$t/dev" 2>/dev/null || true
+  mount -t devpts devpts "$t/dev/pts" -o gid=5,mode=0620 2>/dev/null || true
+  mount -t tmpfs shm "$t/dev/shm" 2>/dev/null || true
+  mount -t tmpfs run "$t/run" 2>/dev/null || true
+  # вывод pacman — в файл: при сбое показываем РЕАЛЬНУЮ ошибку в логе
+  # (раньше она глоталась, пользователь видел только «сбой установки пакетов»)
+  # ВАЖНО: --config указывает на pacman.conf ВНУТРИ таргета, иначе pacman
+  # читает хостовый /etc/pacman.conf (live-системы) и не видит серверов
+  # из зеркала, зашитого в ISO (/opt/sg-offline/mirrorlist).
+  if ! pacman --root "$t" --config "$t/etc/pacman.conf" \
+    --cachedir /opt/sg-offline/pkgs --noconfirm -S "$@" \
+    > /tmp/sg-offline-pacman.log 2>&1; then
+    tail -n 80 /tmp/sg-offline-pacman.log >> "$LOG" 2>/dev/null || true
+    return 1
+  fi
   return 0
 }
 
@@ -238,11 +318,13 @@ step 10 "Установка пакетов (10–25 минут; если инт�
 has_net=0
 timeout 8 curl -fsI https://geo.mirror.pkgbuild.com/ >/dev/null 2>&1 && has_net=1
 if [[ "${has_net}" -eq 1 ]]; then
-  pacstrap -K "$TARGET" ${INSTALL_PKGS} || {
+  if ! pacstrap -K "$TARGET" ${INSTALL_PKGS} > /tmp/sg-pacstrap.log 2>&1; then
+    # вывод pacstrap не глотаем — при сбое показываем хвост в логе установки
+    tail -n 80 /tmp/sg-pacstrap.log >> "$LOG" 2>/dev/null || true
     step 10 "Интернет нестабилен — пробую офлайн-набор из ISO..."
     sg_offline_install "$TARGET" ${INSTALL_PKGS} \
       || die "сбой установки пакетов (pacstrap). Проверьте интернет и лог."
-  }
+  fi
 else
   step 10 "Интернет не найден — ставлю из офлайн-набора, встроенного в ISO..."
   sg_offline_install "$TARGET" ${INSTALL_PKGS} \
@@ -271,7 +353,7 @@ SWAP_MIB=$(( SWAP_GB * 1024 ))   # plain number, interpolated below — no escap
 Q_WINE=$(printf '%q' "$WINE")
 Q_DISK=$(printf '%q' "$DISK")
 Q_ROOT_PARTUUID=$(printf '%q' "$ROOT_PARTUUID")
-cat > "$TARGET/root/sg-chroot-setup.sh" <<EOF
+cat > "$TARGET/root/sg-chroot-setup.sh" <<CHROOT_EOF
 #!/usr/bin/env bash
 # runs inside the chroot
 set -uo pipefail
@@ -292,7 +374,7 @@ echo "\$HOSTNAME" > /etc/hostname
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 cat > /usr/lib/os-release <<'EOF'
 NAME="safegamingOS"
-PRETTY_NAME="safegamingOS 0.11.1"
+PRETTY_NAME="safegamingOS 0.11.3"
 ID=safegamingos
 ID_LIKE=arch
 BUILD_ID=rolling
@@ -383,9 +465,14 @@ fi
 systemctl enable sddm NetworkManager sg-watch sg-track apparmor nftables >/dev/null 2>&1 || true
 systemctl enable clamav-freshclam clamav-freshclam.timer >/dev/null 2>&1 || true
 systemctl enable sg-av-scan.timer >/dev/null 2>&1 || true
+systemctl enable freeze-bg.service >/dev/null 2>&1 || true
 if [ -f /etc/sysctl.d/99-safegamingos.conf ]; then
   sysctl --system >/dev/null 2>&1 || true
 fi
+
+# --- freeze-bg: заморозка фоновых процессов ---
+mkdir -p /etc/freeze-bg
+chmod 700 /etc/freeze-bg
 
 # --- ребрендинг: скрыть KDE Welcome Center ---
 mkdir -p /etc/xdg/autostart
@@ -402,9 +489,12 @@ fi
 
 rm -f /root/sg-chroot-setup.sh
 exit 0
-EOF
+CHROOT_EOF
 
-arch-chroot "$TARGET" /bin/bash /root/sg-chroot-setup.sh || die "сбой настройки системы (см. лог)"
+if ! arch-chroot "$TARGET" /bin/bash /root/sg-chroot-setup.sh > /tmp/sg-chroot.log 2>&1; then
+  tail -n 80 /tmp/sg-chroot.log >> "$LOG" 2>/dev/null || true
+  die "сбой настройки системы (см. лог)"
+fi
 [ -e "$TARGET/root/sg-chroot-setup.sh" ] && rm -f "$TARGET/root/sg-chroot-setup.sh"
 
 step 100 "Установка завершена"

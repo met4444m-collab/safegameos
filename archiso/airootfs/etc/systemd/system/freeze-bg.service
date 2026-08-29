@@ -1,0 +1,26 @@
+[Unit]
+Description=SafeGameOS — заморозка фоновых процессов
+Documentation=https://github.com/met4444m-collab/safegameos
+After=network.target dbus.service
+Wants=dbus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/freeze-bg-monitor
+Restart=always
+RestartSec=3
+
+# Ограничения ресурсов (чтобы сам монитор не жрал)
+MemoryMax=50M
+CPUQuota=5%
+TasksMax=32
+
+# Безопасность
+ProtectSystem=strict
+ReadWritePaths=/var/log/freeze-bg.log /etc/freeze-bg
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

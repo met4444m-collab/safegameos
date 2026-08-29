@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# freeze-bg-monitor — демон мониторинга фоновых процессов
+# Убивает процессы, которых нет в белом списке.
+# Запускается как systemd сервис.
+
+set -uo pipefail
+
+CFG="/etc/freeze-bg/whitelist.conf"
+LOG="/var/log/freeze-bg.log"
+INTERVAL=2  # секунды между проверками
+
+# --- Системные процессы (всегда разрешены) ---
+# Используем map для быстрого поиска
+declare -A ALLOWED
+
+init_allowed() {
+    local system_procs=(
+        systemd systemd-journald systemd-logind systemd-udevd
+        systemd-resolved systemd-timesyncd systemd-networkd
+        systemd-user-sessions systemd-update-utmp
+        dbus-daemon dbus-broker
+        kthreadd ksoftirqd migration rcu_sched
+        watchdog hpwatchdog
+        plasmashell kwin_wayland kwin_x11
+        Xwayland Xorg
+        kscreenlocker_greet sddm
+        pipewire pipewire-pulse wireplumber
+        pulseaudio
+        kactivitymanagerd
+        polkit-kde-authentication-agent-1
+        kded5 kglobalaccel5
+        NetworkManager wpa_supplicant dhcpcd
+        firejail sg-room-run sg-watch sg-track sg-av
+        clamd freshclam
+        nftables
+        rsyslogd syslog-ng
+        freeze-bg freeze-bg-monitor
+        bash sh zsh fish
+        loginagetty
+        udevd systemd-resolve
+        kernel
+    )
+    
+    for p in "${system_procs[@]}"; do
+        ALLOWED["$p"]=1
+    done
+    
+    # загружаем пользовательский белый список
+    if [[ -f "$CFG" ]]; then
+        while IFS= read -r line; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// }" ]] && continue
+            ALLOWED["$line"]=1
+        done < "$CFG"
+    fi
+}
+
+is_allowed() {
+    local name="$1"
+    [[ -n "${ALLOWED[$name]+_}" ]] && return 0
+    
+    # проверяем паттерны с *
+    for pattern in "${!ALLOWED[@]}"; do
+        if [[ "$pattern" == *"*"* ]]; then
+            local base="${pattern//\*/}"
+            if [[ "$name" == ${base}* ]]; then
+                return 0
+            fi
+        fi
+    done
+    
+    return 1
+}
+
+log_freeze() {
+    local pid="$1" name="$2" user="$3" reason="$4"
+    local ts=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$ts FROZEN pid=$pid name=$name user=$user reason=$reason" >> "$LOG"
+    
+    # ротация лога: если больше 1000 строк — обрезаем
+    if [[ -f "$LOG" ]] && [[ $(wc -l < "$LOG") -gt 1000 ]]; then
+        tail -500 "$LOG" > "${LOG}.tmp"
+        mv "${LOG}.tmp" "$LOG"
+    fi
+}
+
+kill_process() {
+    local pid="$1" name="$2"
+    
+    # SIGTERM, потом SIGKILL через 2 сек
+    kill -TERM "$pid" 2>/dev/null
+    sleep 0.5
+    if kill -0 "$pid" 2>/dev/null; then
+        sleep 1.5
+        kill -KILL "$pid" 2>/dev/null
+    fi
+}
+
+# --- Главный цикл ---
+main() {
+    init_allowed
+    
+    while true; do
+        # перечитываем whitelist каждые 10 циклов (чтобы подхватитьadd/remove без рестарта)
+        local reload=${reload:-0}
+        ((reload++))
+        if [[ $reload -ge 10 ]]; then
+            init_allowed
+            reload=0
+        fi
+        
+        # перечисляем все пользовательские процессы
+        while IFS= read -r line; do
+            local pid=$(echo "$line" | awk '{print $1}')
+            local name=$(echo "$line" | awk '{print $2}')
+            local user=$(echo "$line" | awk '{print $3}')
+            
+            # пропускаем если pid уже не существует
+            [[ -d "/proc/$pid" ]] || continue
+            
+            # пропускаем root-процессы (system)
+            [[ "$user" == "root" ]] && continue
+            
+            # проверяем whitelist
+            if ! is_allowed "$name"; then
+                # проверяем не является ли это d-bus сервисом сессии
+                # (некоторые KDE компоненты могут иметь другие имена)
+                local cmdline=""
+                if [[ -f "/proc/$pid/cmdline" ]]; then
+                    cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 200)
+                fi
+                
+                # пропускаем если это shell-SCRIPTOR (скрипт пользователя)
+                if [[ "$cmdline" == *"bash"* ]] || [[ "$cmdline" == *"sh "* ]] || [[ "$cmdline" == *"python"* ]]; then
+                    continue
+                fi
+                
+                # пропускаем если это KDE/Qt процесс (pgrep по имени)
+                if pgrep -x "kde*" &>/dev/null || pgrep -x "plasma*" &>/dev/null; then
+                    continue
+                fi
+                
+                log_freeze "$pid" "$name" "$user" "not-in-whitelist"
+                kill_process "$pid" "$name"
+            fi
+        done < <(ps -eo pid,comm,user --no-headers 2>/dev/null)
+        
+        sleep "$INTERVAL"
+    done
+}
+
+# --- Обработка сигналов ---
+trap 'exit 0' SIGTERM SIGINT
+
+main
