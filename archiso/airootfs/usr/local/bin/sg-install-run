@@ -168,13 +168,25 @@ esac
 
 # ---------------------------------------------------------------------------
 step 2 "Разметка диска $DISK (GPT). Весь диск будет стёрт..."
-# Очищаем диск: dd стирает первые/последние 10 МБ (GPT-заголовок + резерв),
-# после чего parted создаёт свежую таблицу. dd работает даже если wipefs
-# падает с «Device or resource busy» (умный lazy-unmount не всегда отпускает
-# устройство мгновенно).
-osector=$(lsblk -dno SIZE "$DISK" 2>/dev/null | head -1)
+# Агрессивная очистка: сначала размонтируем всё что держит диск,
+# потом стираем GPT-заголовки через dd, затем чистим остатки.
+# lazy-unmount не всегда отпускает устройство мгновенно, поэтому
+# используем несколько методов и повторные попытки.
+
+# 1) Отключаем все loop-устройства привязанные к этому диску
+for _lp in $(losetup -j "$DISK" 2>/dev/null | cut -d: -f1); do
+  losetup -d "$_lp" 2>/dev/null || true
+done
+
+# 2) Принудительное размонтирование всех разделов диска
+for _p in $(lsblk -lnpo NAME "$DISK" 2>/dev/null | tail -n +2); do
+  umount -l "$_p" 2>/dev/null || true
+done
+umount -Rl /mnt 2>/dev/null || true
+udevadm settle 2>/dev/null || sleep 2
+
+# 3) Стираем GPT-заголовок (первые 10 МБ) и резерв (последние 10 МБ)
 osize_bytes=$(lsblk -dbno SIZE "$DISK" 2>/dev/null | head -1)
-# Если не удалось определить размер — стираем 10 МБ с начала и конца
 if [[ -n "${osize_bytes}" && "${osize_bytes}" -gt 20971520 ]]; then
   last_skip=$(( (osize_bytes - 10485760) / 512 ))
   dd if=/dev/zero of="$DISK" bs=1M count=10 conv=fsync 2>/dev/null || true
@@ -182,15 +194,30 @@ if [[ -n "${osize_bytes}" && "${osize_bytes}" -gt 20971520 ]]; then
 else
   dd if=/dev/zero of="$DISK" bs=1M count=10 conv=fsync 2>/dev/null || true
 fi
-# Дополнительно: wipefs/sgdisk если доступны (на случай если dd не стёр всё)
+
+# 4) wipefs + sgdisk: стираем signatures (если доступны)
 if command -v wipefs >/dev/null 2>&1; then
-  wipefs -a "$DISK" 2>/dev/null || true
+  wipefs -a -f "$DISK" 2>/dev/null || true
 fi
 if command -v sgdisk >/dev/null 2>&1; then
   sgdisk --zap-all "$DISK" 2>/dev/null || true
 fi
-udevadm settle 2>/dev/null || sleep 1
-parted -s "$DISK" mklabel gpt || die "не удалось создать GPT-разметку"
+
+# 5) Говорим ядру перечитать таблицу разделов
+partprobe -s "$DISK" 2>/dev/null || true
+udevadm settle 2>/dev/null || sleep 2
+
+# 6) Создаём свежую GPT-разметку (повторяем до 3 раз на случай гонки)
+for _attempt in 1 2 3; do
+  if parted -s "$DISK" mklabel gpt 2>/dev/null; then
+    break
+  fi
+  # Если parted не может — пробуем одноразово записать нули прямо в таблицу
+  dd if=/dev/zero of="$DISK" bs=512 count=34 conv=fsync 2>/dev/null || true
+  partprobe -s "$DISK" 2>/dev/null || true
+  udevadm settle 2>/dev/null || sleep 2
+done
+parted -s "$DISK" mklabel gpt || die "не удалось создать GPT-разметку (диск $DISK)"
 parted -s "$DISK" mkpart ESP fat32 1MiB 513MiB || die "не удалось создать ESP-раздел"
 parted -s "$DISK" set 1 esp on || die "не удалось пометить ESP как загрузочный"
 parted -s "$DISK" mkpart root ext4 513MiB 100% || die "не удалось создать корневой раздел"
