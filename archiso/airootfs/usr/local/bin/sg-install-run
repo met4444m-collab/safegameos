@@ -168,94 +168,91 @@ esac
 
 # ---------------------------------------------------------------------------
 step 2 "Разметка диска $DISK (GPT). Весь диск будет стёрт..."
-# Агрессивная очистка: сначала размонтируем всё что держит диск,
-# потом стираем GPT-заголовки через dd, затем чистим остатки.
-# lazy-unmount не всегда отпускает устройство мгновенно, поэтому
-# используем несколько методов и повторные попытки.
 
-# --- Максимально агрессивная очистка диска ---
-# Пробуем несколько методов: один из них точно сработает.
-_errlog=/tmp/sg-disk-err.log
-: > "$_errlog"
-
-# 1) Размонтируем всё что держит диск
+# --- Шаг А: Размонтируем всё что держит диск ---
 for _lp in $(losetup -j "$DISK" 2>/dev/null | cut -d: -f1); do
-  losetup -d "$_lp" 2>>"$_errlog" || true
+  losetup -d "$_lp" 2>/dev/null || true
 done
 for _p in $(lsblk -lnpo NAME "$DISK" 2>/dev/null | tail -n +2); do
-  umount -l "$_p" 2>>"$_errlog" || true
+  umount -l "$_p" 2>/dev/null || true
 done
-umount -Rl /mnt 2>>"$_errlog" || true
+umount -Rl /mnt 2>/dev/null || true
 udevadm settle 2>/dev/null || sleep 2
 
-# 2) Метод A: sgdisk --zap-all (лучший для GPT — стирает ВСЁ)
-if command -v sgdisk >/dev/null 2>&1; then
-  sgdisk --zap-all "$DISK" 2>>"$_errlog" && _sgdisk_ok=1 || _sgdisk_ok=0
-else
-  _sgdisk_ok=0
-fi
-
-# 3) Метод B: wipefs (стирает signatures файловых систем)
-if command -v wipefs >/dev/null 2>&1; then
-  wipefs -a -f -q "$DISK" 2>>"$_errlog" || true
-fi
-
-# 4) Метод C: dd стирает первые 34 сектора (GPT header + entries)
-#    и последние 20480 секторов (GPT backup)
+# --- Шаг Б: Полное обнуление первых 2 МБ и последних 2 МБ диска ---
+# Это стирает GPT header (LBA 1) и backup GPT (конец диска)
+# bs=1M count=2 = 2 МБ — быстрее чем обнулять весь диск
 osize_bytes=$(lsblk -dbno SIZE "$DISK" 2>/dev/null | head -1)
-dd if=/dev/zero of="$DISK" bs=512 count=34 conv=fsync 2>>"$_errlog" || true
-if [[ -n "${osize_bytes}" && "${osize_bytes}" -gt 10485760 ]]; then
-  last_skip=$(( (osize_bytes - 10485760) / 512 ))
-  dd if=/dev/zero of="$DISK" bs=512 seek="${last_skip}" count=20480 conv=fsync 2>>"$_errlog" || true
+dd if=/dev/zero of="$DISK" bs=1M count=2 conv=fsync 2>/dev/null || true
+if [[ -n "${osize_bytes}" && "${osize_bytes}" -gt 2097152 ]]; then
+  # Последние 2 МБ диска: seek = (размер - 2МБ) / 1МБ
+  _last_mib=$(( (osize_bytes - 2097152) / 1048576 ))
+  dd if=/dev/zero of="$DISK" bs=1M seek="${_last_mib}" count=2 conv=fsync 2>/dev/null || true
 fi
 
-# 5) Ядро должно перечитать таблицу
-blockdev --rereadpt "$DISK" 2>>"$_errlog" || true
-partprobe -s "$DISK" 2>>"$_errlog" || true
+# --- Шаг В: Очищаем signatures (wipefs) и GPT (sgdisk) ---
+command -v wipefs >/dev/null 2>&1 && wipefs -a "$DISK" 2>/dev/null || true
+command -v sgdisk >/dev/null 2>&1 && sgdisk --zap-all "$DISK" 2>/dev/null || true
+
+# --- Шаг Г: Ядро перечитывает таблицу ---
+blockdev --rereadpt "$DISK" 2>/dev/null || true
+partprobe "$DISK" 2>/dev/null || true
 udevadm settle 2>/dev/null || sleep 3
 
-# 6) Проверяем что старая GPT стёрта (magic bytes LBA1 = 0x0)
-_gpt_test=$(dd if="$DISK" bs=1 count=8 skip=512 2>/dev/null | od -A n -t x1 | head -1)
-step 2 "Очистка диска (sgdisk=$_sgdisk_ok, GPT magic=$_gpt_test)..."
+# --- Шаг Д: Создаём GPT + разделы через sfdisk (самый надёжный метод) ---
+# sfdisk — часть util-linux, ВСЕГДА доступен. Он напрямую пишет таблицу
+# разделов в MBR/GPT, НЕ зависит от backup GPT и не проверяет "有意思".
+step 2 "Создаю GPT-разметку через sfdisk..."
 
-# 7) Создаём свежую GPT-разметку через sgdisk (надёжнее parted)
-if [[ "$_sgdisk_ok" -eq 1 ]]; then
-  sgdisk --clear "$DISK" 2>>"$_errlog" \
-    && sgdisk --new=1:0:+512M --typecode=1:ef00 --change-name=1:ESP "$DISK" 2>>"$_errlog" \
-    && sgdisk --new=2:0:0 --typecode=2:8300 --change-name=2:root "$DISK" 2>>"$_errlog" \
-    && _sgdisk_parts=1 || _sgdisk_parts=0
-else
-  _sgdisk_parts=0
+# Определяем размер диска в секторах (512 байт)
+disk_sectors=$(blockdev --getsz "$DISK" 2>/dev/null || echo 0)
+
+# ESP = 512 МБ = 1048576 секторов, начинается с сектора 2048 (1 МиБ)
+esp_start=2048
+esp_size=1048576
+root_start=$(( esp_start + esp_size ))
+root_size=$(( disk_sectors - root_start - 34 ))  # 34 сектора резерва для backup GPT
+
+if [[ "${disk_sectors}" -lt 2099200 ]]; then
+  die "диск слишком маленький для установки ($(lsblk -dno SIZE "$DISK" 2>/dev/null))"
 fi
 
-# 8) Если sgdisk не помог — пробуем parted (повторяем до 5 раз)
-if [[ "$_sgdisk_parts" -eq 0 ]]; then
-  for _attempt in 1 2 3 4 5; do
-    # Перед каждой попыткой снова стираем заголовки
-    dd if=/dev/zero of="$DISK" bs=512 count=34 conv=fsync 2>>"$_errlog" || true
-    blockdev --rereadpt "$DISK" 2>>"$_errlog" || true
-    sleep 1
-    if parted -s "$DISK" mklabel gpt 2>>"$_errlog"; then
-      parted -s "$DISK" mkpart ESP fat32 1MiB 513MiB 2>>"$_errlog" \
-        && parted -s "$DISK" set 1 esp on 2>>"$_errlog" \
-        && parted -s "$DISK" mkpart root ext4 513MiB 100% 2>>"$_errlog" \
-        && break
-    fi
-  done
+# sfdisk: перезаписывает таблицу разделов ПРЯМО — не зависит от того
+# что было на диске ранее. Формат: <старт>:<размер>, type=<GUID>
+printf 'label: gpt\nunit: sectors\n\n%s1 : start=%d, size=%d, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B\n%s2 : start=%d, size=%d, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4\n' \
+  "$DISK" "$esp_start" "$esp_size" \
+  "$DISK" "$root_start" "$root_size" \
+  | sfdisk --no-reread --no-tell-kernel "$DISK"
+sfdisk_rc=$?
+
+# Если sfdisk не сработал — пробуем parted как fallback
+if [[ $sfdisk_rc -ne 0 ]]; then
+  step 2 "sfdisk не сработал, пробую parted..."
+  # Полное обнуление перед parted
+  dd if=/dev/zero of="$DISK" bs=1M count=2 conv=fsync 2>/dev/null || true
+  dd if=/dev/zero of="$DISK" bs=1M seek="$(( (osize_bytes - 2097152) / 1048576 ))" count=2 conv=fsync 2>/dev/null || true
+  blockdev --rereadpt "$DISK" 2>/dev/null || true
+  sleep 2
+  parted -s "$DISK" mklabel gpt \
+    && parted -s "$DISK" mkpart ESP fat32 1MiB 513MiB \
+    && parted -s "$DISK" set 1 esp on \
+    && parted -s "$DISK" mkpart root ext4 513MiB 100% \
+    || die "sfdisk и parted оба не смогли создать разметку на $DISK"
 fi
 
-# 9) Проверяем что разделы созданы
-if ! lsblk -lnpo NAME,TYPE "$DISK" 2>/dev/null | grep -q 'part'; then
-  cat "$_errlog" >&2
-  die "не удалось создать GPT-разметку (диск $DISK). Лог: $(cat "$_errlog")"
-fi
-
-# 10) Финальная проверка: ESP и ROOT существуют
-if [[ ! -b "$ESP" || ! -b "$ROOT" ]]; then
-  cat "$_errlog" >&2
-  die "разделы не созданы: ESP=$ESP ROOT=$ROOT. Диск: $(lsblk -lnpo NAME "$DISK")"
-fi
 udevadm settle 2>/dev/null || sleep 2
+
+# --- Шаг Е: Проверяем что разделы созданы ---
+if ! lsblk -lnpo NAME,TYPE "$DISK" 2>/dev/null | grep -q 'part'; then
+  die "разделы не появились после разметки ($DISK)"
+fi
+if [[ ! -b "$ESP" || ! -b "$ROOT" ]]; then
+  # Обновляем пути на случай если sfdisk нумерует иначе
+  _parts=($(lsblk -lnpo NAME,TYPE "$DISK" 2>/dev/null | awk '$2=="part"{print $1}'))
+  ESP="${_parts[0]:-$ESP}"
+  ROOT="${_parts[1]:-$ROOT}"
+  [[ -b "$ESP" && -b "$ROOT" ]] || die "разделы не созданы: ESP=$ESP ROOT=$ROOT"
+fi
 
 step 4 "Форматирование разделов..."
 mkfs.fat -F32 "$ESP" >/dev/null 2>&1 || die "не удалось отформатировать ESP ($ESP)"
