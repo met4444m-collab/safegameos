@@ -16,6 +16,16 @@ LOG=/tmp/sg-install.log
 : > "$LOG"
 chmod 644 "$LOG" 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# ТЕСТОВЫЙ РЕЖИМ: SG_INSTALL_TEST=1
+# Диском может быть обычный ФАЙЛ (виртуальный диск). Установщик выполняет
+# полную очистку + GPT-разметку + проверку таблицы и завершается ДО pacstrap/
+# chroot — так логику разметки можно проверять в песочнице без root и без
+# VirtualBox, на файле с заранее «испорченной» старой GPT.
+# ---------------------------------------------------------------------------
+TEST_MODE=0
+[[ "${SG_INSTALL_TEST:-}" == "1" ]] && TEST_MODE=1
+
 step() { echo "PROGRESS:$1|$2" >> "$LOG"; }
 die() { echo "ERROR|$*" >> "$LOG"; exit 1; }
 
@@ -123,16 +133,23 @@ rm -f "$CONF"
 # --- строгая валидация значений (данные, не код) ---
 [[ -n "${DISK}" && -n "${HOSTNAME}" && -n "${USERNAME}" && -n "${PASS}" ]] \
   || die "конфиг: не хватает полей (DISK/HOSTNAME/USERNAME/PASS)"
-[[ "$DISK" =~ ^/dev/[a-zA-Z0-9]+$ ]] || die "неверный путь диска: $DISK"
-[[ -b "$DISK" ]] || die "диск не найден: $DISK"
-# диск должен быть ЦЕЛЫМ диском, а не разделом
-[[ "$(lsblk -dno TYPE "$DISK" 2>/dev/null)" == "disk" ]] \
-  || die "указан не целый диск: $DISK (нужен /dev/sda, /dev/nvme0n1 и т.п.)"
+if [[ "${TEST_MODE}" -eq 1 ]]; then
+  [[ -f "$DISK" ]] || die "тестовый диск-файл не найден: $DISK"
+else
+  [[ "$DISK" =~ ^/dev/[a-zA-Z0-9]+$ ]] || die "неверный путь диска: $DISK"
+  [[ -b "$DISK" ]] || die "диск не найден: $DISK"
+  # диск должен быть ЦЕЛЫМ диском, а не разделом
+  [[ "$(lsblk -dno TYPE "$DISK" 2>/dev/null)" == "disk" ]] \
+    || die "указан не целый диск: $DISK (нужен /dev/sda, /dev/nvme0n1 и т.п.)"
+fi
 # Если разделы этого диска смонтированы от предыдущей неудачной попытки —
 # размонтируем (сначала потомков, потом корень), чтобы parted/mkfs не падали.
 # Если это РЕАЛЬНЫЙ корень текущей системы — отказываемся (защита от стирания
 # рабочей системы).
-_mounted_parts=$(mount 2>/dev/null | grep -oE "^${DISK}[p0-9]*" || true)
+_mounted_parts=""
+if [[ "${TEST_MODE}" -eq 0 ]]; then
+  _mounted_parts=$(mount 2>/dev/null | grep -oE "^${DISK}[p0-9]*" || true)
+fi
 if [[ -n "${_mounted_parts}" ]]; then
   # Проверяем, не является ли один из смонтированных разделов текущим корнем
   _root_dev=$(findmnt -n -o SOURCE / 2>/dev/null || true)
@@ -182,7 +199,11 @@ udevadm settle 2>/dev/null || sleep 2
 # --- Шаг Б: Полное обнуление первых 2 МБ и последних 2 МБ диска ---
 # Это стирает GPT header (LBA 1) и backup GPT (конец диска)
 # bs=1M count=2 = 2 МБ — быстрее чем обнулять весь диск
-osize_bytes=$(lsblk -dbno SIZE "$DISK" 2>/dev/null | head -1)
+if [[ "${TEST_MODE}" -eq 1 ]]; then
+  osize_bytes=$(stat -c %s "$DISK" 2>/dev/null || echo 0)
+else
+  osize_bytes=$(lsblk -dbno SIZE "$DISK" 2>/dev/null | head -1)
+fi
 dd if=/dev/zero of="$DISK" bs=1M count=2 conv=fsync 2>/dev/null || true
 if [[ -n "${osize_bytes}" && "${osize_bytes}" -gt 2097152 ]]; then
   # Последние 2 МБ диска: seek = (размер - 2МБ) / 1МБ
@@ -205,7 +226,11 @@ udevadm settle 2>/dev/null || sleep 3
 step 2 "Создаю GPT-разметку через sfdisk..."
 
 # Определяем размер диска в секторах (512 байт)
-disk_sectors=$(blockdev --getsz "$DISK" 2>/dev/null || echo 0)
+if [[ "${TEST_MODE}" -eq 1 ]]; then
+  disk_sectors=$(( $(stat -c %s "$DISK") / 512 ))
+else
+  disk_sectors=$(blockdev --getsz "$DISK" 2>/dev/null || echo 0)
+fi
 
 # ESP = 512 МБ = 1048576 секторов, начинается с сектора 2048 (1 МиБ)
 esp_start=2048
@@ -241,6 +266,18 @@ if [[ $sfdisk_rc -ne 0 ]]; then
 fi
 
 udevadm settle 2>/dev/null || sleep 2
+
+# --- Шаг Е (только ТЕСТ): проверяем таблицу и выходим до монтирования ---
+if [[ "${TEST_MODE}" -eq 1 ]]; then
+  if ! sfdisk -d "$DISK" 2>/dev/null | grep -q "$DISK"; then
+    die "TEST: таблица разделов не читается после разметки ($DISK)"
+  fi
+  _nparts=$(sfdisk -d "$DISK" 2>/dev/null | grep -cE "${DISK}[12] ?:")
+  [[ "${_nparts}" -ge 2 ]] || die "TEST: ожидалось 2 раздела, найдено ${_nparts}"
+  step 100 "ТЕСТ ПРОЙДЕН: GPT + 2 раздела созданы на виртуальном диске"
+  echo "DONE|TEST OK: разметка $DISK создана, таблица валидна (разделов: ${_nparts})."
+  exit 0
+fi
 
 # --- Шаг Е: Проверяем что разделы созданы ---
 if ! lsblk -lnpo NAME,TYPE "$DISK" 2>/dev/null | grep -q 'part'; then
