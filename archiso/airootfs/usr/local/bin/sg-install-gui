@@ -323,7 +323,7 @@ class ErrorPage(Page):
 class MainWin(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"Установка {APP}")
+        self.setWindowTitle(f"Установка {APP} — installer v2 (sfdisk)")
         self.resize(820, 640)
 
         root = QWidget()
